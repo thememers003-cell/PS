@@ -323,9 +323,12 @@ export default function KioskApp() {
           });
           const printRes = await res.json();
           if (!printRes.success) {
-            console.error('❌ Physical print request rejected:', printRes.error);
-            setError(printRes.error || 'Failed to dispatch print job to hardware printer.');
-            setScreen('error');
+            console.warn('⚠️ Physical print request rejected by backend, falling back to local PC browser print:', printRes.error);
+            const printedLocally = await triggerBrowserPrint(fullDownloadUrl, { copies: data.copies, colorMode: data.colorMode, totalPages: totalPgs });
+            if (!printedLocally) {
+              setError(printRes.error || 'Failed to dispatch print job to hardware printer.');
+              setScreen('error');
+            }
           } else {
             console.log('✅ Physical print job sent to hardware printer:', printRes.data?.printerName);
             if (printRes.data?.printerName) {
@@ -333,9 +336,12 @@ export default function KioskApp() {
             }
           }
         } catch (e: any) {
-          console.error('Physical print dispatch error:', e);
-          setError('Failed to communicate with physical printer service.');
-          setScreen('error');
+          console.warn('Physical print dispatch error, falling back to local PC browser print:', e);
+          const printedLocally = await triggerBrowserPrint(fullDownloadUrl, { copies: data.copies, colorMode: data.colorMode, totalPages: totalPgs });
+          if (!printedLocally) {
+            setError('Failed to communicate with physical printer service.');
+            setScreen('error');
+          }
         }
       }
     });
@@ -371,11 +377,12 @@ export default function KioskApp() {
           });
           const printRes = await res.json();
           if (!printRes.success) {
-            setError(printRes.error || 'Failed to send job to physical printer.');
-            setScreen('error');
+            console.warn('⚠️ Backend print rejected, falling back to local PC browser print:', printRes.error);
+            await triggerBrowserPrint(fullDownloadUrl, { copies: data.job.copies, colorMode: data.job.colorMode, totalPages: totalPgs });
           }
         } catch (e) {
-          console.error('Print trigger error:', e);
+          console.warn('Print trigger error, falling back to local PC browser print:', e);
+          await triggerBrowserPrint(fullDownloadUrl, { copies: data.job.copies, colorMode: data.job.colorMode, totalPages: totalPgs });
         }
       }
     });
@@ -588,9 +595,12 @@ export default function KioskApp() {
             });
             const pData = await printRes.json();
             if (!pData.success) {
-              console.error('❌ Physical print request rejected:', pData.error);
-              setError(pData.error || 'Failed to dispatch job to physical printer.');
-              setScreen('error');
+              console.warn('⚠️ Physical print request rejected by backend, routing to local PC printer via universal browser print:', pData.error);
+              const printedLocally = await triggerBrowserPrint(fullDownloadUrl, { copies, colorMode, totalPages });
+              if (!printedLocally) {
+                setError(pData.error || 'Failed to dispatch job to physical printer.');
+                setScreen('error');
+              }
             } else {
               console.log('✅ Print job dispatched to hardware printer:', pData.data?.printerName);
               if (pData.data?.printerName) {
@@ -598,9 +608,12 @@ export default function KioskApp() {
               }
             }
           } catch (e: any) {
-            console.error('Physical print trigger error:', e);
-            setError('Failed to communicate with physical printer service.');
-            setScreen('error');
+            console.warn('Physical print trigger error, falling back to local PC printer via universal browser print:', e);
+            const printedLocally = await triggerBrowserPrint(fullDownloadUrl, { copies, colorMode, totalPages });
+            if (!printedLocally) {
+              setError('Failed to communicate with physical printer service.');
+              setScreen('error');
+            }
           }
         }
 

@@ -116,12 +116,13 @@ function fallbackWindowPrint(url: string) {
   try {
     const printWindow = window.open(url, '_blank');
     if (printWindow) {
-      printWindow.onload = () => {
+      // In case onload doesn't fire for internal browser PDF viewers
+      setTimeout(() => {
         try {
           printWindow.focus();
           printWindow.print();
         } catch {}
-      };
+      }, 1200);
     }
   } catch (err) {
     console.error('❌ [BrowserPrint] Window fallback failed:', err);
