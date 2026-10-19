@@ -29,7 +29,7 @@ export class PhonePeProvider implements PaymentProvider {
       saltKey: process.env.PHONEPE_SALT_KEY || '099eb0cd-02cf-4e2a-8aca-3e6c6aff0399',
       keyIndex: parseInt(process.env.PHONEPE_KEY_INDEX || '1'),
       env: (process.env.PHONEPE_ENV as 'UAT' | 'PROD') || 'UAT',
-      vpa: process.env.PHONEPE_MERCHANT_VPA || process.env.UPI_MERCHANT_VPA || '8498864658@ybl',
+      vpa: process.env.PHONEPE_MERCHANT_VPA || process.env.UPI_MERCHANT_VPA || 'pkt-8498864658@okbizaxis',
       merchantName: process.env.PHONEPE_MERCHANT_NAME || process.env.UPI_MERCHANT_NAME || 'Print Bro',
       callbackUrl: process.env.PHONEPE_CALLBACK_URL || `${process.env.API_URL || 'http://localhost:4000'}/api/payments/webhook`,
       ...customConfig,

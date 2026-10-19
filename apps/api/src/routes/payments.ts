@@ -80,7 +80,7 @@ router.post('/create', async (req: Request, res: Response) => {
         qrData: order.qrData,
         upiLink: order.upiLink,
         gpayLink: (order as any).gpayLink || order.upiLink,
-        payeeVpa: (order as any).payeeVpa || process.env.UPI_MERCHANT_VPA || '8498864658@okbizaxis',
+        payeeVpa: (order as any).payeeVpa || process.env.UPI_MERCHANT_VPA || 'pkt-8498864658@okbizaxis',
         expiresAt: order.expiresAt,
       },
     });
