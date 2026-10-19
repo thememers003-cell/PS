@@ -124,11 +124,13 @@ router.get('/:id', async (req: Request, res: Response) => {
     let printerName = kiosk.printer?.name || null;
     let printerStatus = kiosk.printer?.status || 'READY';
 
-    // If printer name is generic or unset, auto-detect physical printer on host
-    if (!printerName || printerName === 'Default Printer' || printerName === 'Auto-Detected Printer') {
+    const isAutoDetect = !process.env.WINDOWS_PRINTER_NAME || process.env.WINDOWS_PRINTER_NAME.toLowerCase() === 'auto';
+
+    // Auto-detect physical printer on host and assign to kiosk
+    if (isAutoDetect || !printerName || printerName === 'Default Printer' || printerName === 'Auto-Detected Printer') {
       try {
         const detectedDefault = await printerService?.getDefaultPrinter?.();
-        if (detectedDefault?.name) {
+        if (detectedDefault?.name && (isAutoDetect || !printerName || printerName === 'Default Printer' || printerName === 'Auto-Detected Printer')) {
           printerName = detectedDefault.name;
           printerStatus = detectedDefault.status || 'READY';
           // Persist detected printer
@@ -198,8 +200,9 @@ router.get('/:id/detected-printers', async (req: Request, res: Response) => {
     });
 
     if (kiosk && defaultPrinter?.name) {
-      // Auto-assign detected hardware printer if kiosk has generic or no printer
-      if (!kiosk.printer || kiosk.printer.name === 'Default Printer' || kiosk.printer.name === 'Auto-Detected Printer') {
+      const isAutoDetect = !process.env.WINDOWS_PRINTER_NAME || process.env.WINDOWS_PRINTER_NAME.toLowerCase() === 'auto';
+      // Auto-assign detected hardware printer if auto-detection is enabled or kiosk has generic printer
+      if (isAutoDetect || !kiosk.printer || kiosk.printer.name === 'Default Printer' || kiosk.printer.name === 'Auto-Detected Printer') {
         const assigned = await prisma.printer.upsert({
           where: { kioskId: kiosk.id },
           create: {
