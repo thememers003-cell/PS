@@ -138,23 +138,46 @@ export class LocalStorageService implements IStorageService {
     return key;
   }
 
+  resolveExistingPath(key: string): string {
+    const candidates = [
+      path.join(this.baseDir, key),
+      path.resolve(this.baseDir, '..', key),
+      path.resolve(process.cwd(), 'uploads', key),
+      path.resolve(process.cwd(), key),
+      path.resolve('C:\\Users\\ADMIN\\Desktop\\OU  - XPOS\\apps\\api\\uploads', key),
+      path.resolve('C:\\Users\\ADMIN\\Desktop\\OU  - XPOS\\uploads', key),
+      path.resolve('C:\\Users\\ADMIN\\Desktop\\OU  - XPOS', key),
+      path.resolve(__dirname, '../../../../apps/api/uploads', key),
+      path.resolve(__dirname, '../../../../uploads', key),
+      path.resolve(__dirname, '../../../../', key),
+    ];
+    for (const c of candidates) {
+      try {
+        if (fs.existsSync(c) && fs.statSync(c).isFile()) {
+          return c;
+        }
+      } catch {}
+    }
+    return path.join(this.baseDir, key);
+  }
+
   async getSignedUrl(key: string): Promise<string> {
     const apiUrl = process.env.API_URL || 'http://localhost:4000';
     return `${apiUrl}/api/files/download/${encodeURIComponent(key)}`;
   }
 
   async downloadFile(key: string): Promise<Buffer> {
-    const filePath = path.join(this.baseDir, key);
+    const filePath = this.resolveExistingPath(key);
     return await fs.promises.readFile(filePath);
   }
 
   getLocalFilePath(key: string): string | null {
-    const filePath = path.join(this.baseDir, key);
+    const filePath = this.resolveExistingPath(key);
     return fs.existsSync(filePath) ? filePath : null;
   }
 
   async deleteFile(key: string): Promise<void> {
-    const filePath = path.join(this.baseDir, key);
+    const filePath = this.resolveExistingPath(key);
     if (fs.existsSync(filePath)) {
       await fs.promises.unlink(filePath);
     }
@@ -167,7 +190,7 @@ export class LocalStorageService implements IStorageService {
   }
 
   async fileExists(key: string): Promise<boolean> {
-    return fs.existsSync(path.join(this.baseDir, key));
+    return fs.existsSync(this.resolveExistingPath(key));
   }
 }
 

@@ -309,21 +309,28 @@ router.post('/:id/print', async (req: Request, res: Response) => {
     const path = require('path');
     const os = require('os');
 
-    let tempFilePath = typeof storage.getLocalFilePath === 'function'
-      ? storage.getLocalFilePath(job.file.storageKey)
-      : null;
+    // Ensure file for hardware printer is ALWAYS a true, verified .pdf format
+    const tempDir = path.join(os.tmpdir(), 'xpos-print');
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
-    if (!tempFilePath || !fs.existsSync(tempFilePath)) {
-      const tempDir = path.join(os.tmpdir(), 'xpos-print');
-      if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-      const safeBaseName = path.basename(job.file.originalName, path.extname(job.file.originalName)).replace(/[^a-zA-Z0-9_-]/g, '_');
-      tempFilePath = path.join(tempDir, `${job.id}_${safeBaseName}.pdf`);
-      const fileBuffer = await storage.downloadFile(job.file.storageKey);
-      fs.writeFileSync(tempFilePath, fileBuffer);
-      console.log(`📥 Downloaded "${job.file.originalName}" to temp path: "${tempFilePath}"`);
-    } else {
-      console.log(`⚡ Direct fast-print path used: "${tempFilePath}"`);
+    const safeBaseName = path.basename(job.file.originalName, path.extname(job.file.originalName)).replace(/[^a-zA-Z0-9_-]/g, '_');
+    const printablePdfPath = path.join(tempDir, `${job.id}_${safeBaseName}.pdf`);
+
+    // Download / read file buffer from storage
+    const rawBuffer = await storage.downloadFile(job.file.storageKey);
+    let printableBuffer = rawBuffer;
+
+    // Verify if buffer is valid PDF (%PDF magic number)
+    const isPdfHeader = rawBuffer.length >= 4 && rawBuffer[0] === 0x25 && rawBuffer[1] === 0x50 && rawBuffer[2] === 0x44 && rawBuffer[3] === 0x46;
+    if (!isPdfHeader) {
+      console.log(`🖼️ File "${job.file.originalName}" is image/non-pdf format, converting to clean printable A4 PDF...`);
+      const { convertImageToPdf } = require('@xpos/document');
+      printableBuffer = await convertImageToPdf(rawBuffer, job.file.mimeType || 'image/jpeg');
     }
+
+    fs.writeFileSync(printablePdfPath, printableBuffer);
+    console.log(`📄 Printable hardware PDF prepared at: "${printablePdfPath}" (${printableBuffer.length} bytes)`);
+    const tempFilePath = printablePdfPath;
 
     // Determine target printer name (request body -> kiosk assigned printer -> default physical)
     let targetPrinterName = req.body.printerName || job.kiosk?.printer?.name || undefined;
