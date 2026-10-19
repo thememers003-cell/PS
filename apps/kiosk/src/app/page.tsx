@@ -709,7 +709,7 @@ export default function KioskApp() {
             title="Click to view detected printers or change assigned printer"
           >
             <Printer className="w-4 h-4 text-blue-600" />
-            <span className="max-w-[130px] md:max-w-[200px] truncate" suppressHydrationWarning>{activePrinterName || 'Canon MF280 Series'}</span>
+            <span className="max-w-[130px] md:max-w-[200px] truncate" suppressHydrationWarning>{activePrinterName || 'Auto-Detected Printer'}</span>
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
           </button>
 
@@ -1162,7 +1162,7 @@ export default function KioskApp() {
                   {/* 🖨️ Active Hardware Printer Card */}
                   <div className="flex items-center justify-center gap-2 text-xs font-bold text-slate-700 bg-white border border-blue-200 py-2 px-4 rounded-xl shadow-xs">
                     <Printer className="w-4 h-4 text-blue-600 animate-pulse" />
-                    <span>Hardware Printer: <strong className="text-blue-900 font-extrabold">{activePrinterName || 'Canon MF280 Series'}</strong></span>
+                    <span>Hardware Printer: <strong className="text-blue-900 font-extrabold">{activePrinterName || 'Auto-Detected Printer'}</strong></span>
                     <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
                   </div>
 
@@ -1355,7 +1355,7 @@ export default function KioskApp() {
             title="Click to check or switch hardware printer"
           >
             <Printer className="w-3.5 h-3.5 text-blue-600" />
-            <span>Hardware Printer: <strong className="text-slate-900">{activePrinterName || 'Canon MF280 Series'}</strong></span>
+            <span>Hardware Printer: <strong className="text-slate-900">{activePrinterName || 'Auto-Detected Printer'}</strong></span>
             <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
             <span className="text-emerald-700 font-extrabold uppercase text-[10px]">({printerStatus})</span>
           </button>

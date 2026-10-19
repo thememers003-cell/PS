@@ -113,7 +113,7 @@ export class WindowsPrinterService extends EventEmitter implements PrinterServic
           model: name,
         }));
       } catch {
-        return [{ id: 'MF280 Series', name: 'MF280 Series', isDefault: true, status: 'READY' }];
+        return [{ id: 'auto-printer', name: 'Auto-Detected Printer', isDefault: true, status: 'READY' }];
       }
     }
   }
@@ -121,12 +121,12 @@ export class WindowsPrinterService extends EventEmitter implements PrinterServic
   async getDefaultPrinter(): Promise<PrinterInfo | null> {
     const printers = await this.getPrinters();
     const targetName = process.env.WINDOWS_PRINTER_NAME || this.defaultPrinterName;
-    if (targetName && targetName.trim().length > 0) {
+    if (targetName && targetName.trim().length > 0 && targetName.toLowerCase() !== 'auto') {
       const match = printers.find(p => p.name.toLowerCase().includes(targetName.toLowerCase()));
       if (match) return match;
     }
 
-    // Prefer real physical hardware printer (e.g. MF280 Series, Canon, HP, Brother, Epson)
+    // Dynamic auto-detection: pick first real physical hardware printer installed in Windows
     const physical = printers.find(p =>
       !p.name.includes('PDF') &&
       !p.name.includes('XPS') &&

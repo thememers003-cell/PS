@@ -152,7 +152,7 @@ app.get('/', (_req, res) => {
             <div class="box-value">v2.0 Production 🚀</div>
           </div>
         </div>
-        <div class="footer">XPOS Cloud Self-Service System • Canon MF280 Bridge</div>
+        <div class="footer">XPOS Cloud Self-Service System • Physical Hardware Printer Bridge</div>
       </div>
     </body>
     </html>

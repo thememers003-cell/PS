@@ -1762,7 +1762,7 @@ export default function SuperAdminRootPage() {
                   <label className="block text-slate-600 font-bold mb-1">Hardware Printer Name</label>
                   <input
                     type="text"
-                    placeholder="Canon MF280 Series"
+                    placeholder="e.g. Epson L3250 Series or Auto"
                     value={editKioskPrinterName}
                     onChange={(e) => setEditKioskPrinterName(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-900 focus:outline-none focus:border-sky-500 focus:bg-white"

@@ -519,7 +519,7 @@ router.post('/pair-kiosk', async (req: Request, res: Response) => {
       },
     });
 
-    const targetPrinterName = kiosk.printer?.name || (await printer?.getDefaultPrinter?.())?.name || 'Canon MF280 Series';
+    const targetPrinterName = kiosk.printer?.name || (await printer?.getDefaultPrinter?.())?.name || 'Auto-Detected Printer';
 
     const printPayload = {
       jobId: printCode.job.id,
