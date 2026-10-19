@@ -11,6 +11,9 @@ export interface PaymentProvider {
   createOrder(amount: number, currency: string, metadata: Record<string, string>): Promise<PaymentOrder>;
   verifyPayment(orderId: string, paymentData: unknown): Promise<PaymentVerification>;
   initiateRefund(paymentId: string, amount: number): Promise<RefundResult>;
+  processWebhook?(payload: any, signatureHeader?: string): { success: boolean; orderId?: string; amount?: number; providerRef?: string; error?: string };
+  initiateOmnichannelPayment?(params: any): Promise<any>;
+  getOmnichannelStatus?(transactionId: string, authToken?: string): Promise<any>;
 }
 
 // ── Mock Payment Provider ──
@@ -94,16 +97,27 @@ export class MockPaymentProvider implements PaymentProvider {
   }
 }
 
+import { GooglePayUpiProvider } from './googlepay-upi';
+import { PhonePeProvider } from './phonepe';
+
 // ── Factory ──
 export function createPaymentProvider(): PaymentProvider {
-  const provider = process.env.PAYMENT_PROVIDER || 'mock';
+  const provider = (process.env.PAYMENT_PROVIDER || 'gpay').toLowerCase();
   switch (provider) {
+    case 'phonepe':
+    case 'phonepe-pg':
+    case 'phone-pe':
+      return new PhonePeProvider();
+    case 'gpay':
+    case 'upi':
+    case 'googlepay':
+    case 'gpay-upi':
+      return new GooglePayUpiProvider();
     case 'mock':
       return new MockPaymentProvider();
-    // Future: case 'razorpay': return new RazorpayProvider();
-    // Future: case 'cashfree': return new CashfreeProvider();
     default:
-      console.warn(`Unknown payment provider: ${provider}, falling back to mock`);
-      return new MockPaymentProvider();
+      return new GooglePayUpiProvider();
   }
 }
+
+export { GooglePayUpiProvider, PhonePeProvider };

@@ -8,7 +8,12 @@
     "apps/*"
   ],
   "scripts": {
-    "dev": "turbo run dev",
+    "dev": "node scripts/dev.js",
+    "dev:turbo": "turbo run dev",
+    "dev:api": "npm --prefix apps/api run dev",
+    "dev:customer": "npm --prefix apps/customer run dev",
+    "dev:kiosk": "npm --prefix apps/kiosk run dev",
+    "dev:admin": "npm --prefix apps/admin run dev",
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",

@@ -147,10 +147,10 @@ export async function createPayment(jobId: string) {
   });
 }
 
-export async function verifyPayment(paymentId: string, orderId: string) {
+export async function verifyPayment(paymentId: string, orderId: string, paymentData: any = {}) {
   return apiRequest<any>('/api/payments/verify', {
     method: 'POST',
-    body: JSON.stringify({ paymentId, orderId }),
+    body: JSON.stringify({ paymentId, orderId, paymentData }),
   });
 }
 

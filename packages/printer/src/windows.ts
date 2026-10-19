@@ -30,11 +30,66 @@ export class WindowsPrinterService extends EventEmitter implements PrinterServic
   }
 
   /**
-   * Get list of physical & virtual printers installed on Windows
+   * Get list of physical & virtual printers installed on Windows.
+   * Uses Windows Registry (100% reliable, never blocked by CIM/WMI policies)
    */
   async getPrinters(): Promise<PrinterInfo[]> {
     try {
-      const ptp = await import('pdf-to-printer');
+      const { stdout: regOut } = await execAsync('reg query "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Devices"');
+      const lines = regOut.split(/\r?\n/).filter(line => line.includes('REG_SZ'));
+
+      let defaultPrinterName = '';
+      try {
+        const { stdout: defOut } = await execAsync('reg query "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows" /v Device');
+        const match = defOut.match(/Device\s+REG_SZ\s+([^,]+)/);
+        if (match && match[1]) {
+          defaultPrinterName = match[1].trim();
+        }
+      } catch {}
+
+      if (lines.length > 0) {
+        const printers: PrinterInfo[] = [];
+        for (const line of lines) {
+          const match = line.trim().match(/^([^\t]+|\S.*?)\s+REG_SZ/);
+          if (match && match[1]) {
+            const name = match[1].trim();
+            printers.push({
+              id: name,
+              name,
+              isDefault: defaultPrinterName ? name.toLowerCase() === defaultPrinterName.toLowerCase() : false,
+              status: 'READY' as PrinterStatus,
+              model: name,
+            });
+          }
+        }
+
+        if (printers.length > 0) {
+          // If no default matched or default is generic/virtual, identify primary physical printer
+          const physicalPrinter = printers.find(p =>
+            !p.name.includes('PDF') &&
+            !p.name.includes('XPS') &&
+            !p.name.includes('OneNote') &&
+            !p.name.includes('Fax') &&
+            !p.name.includes('Generic') &&
+            !p.name.includes('OrCAD')
+          );
+          if (physicalPrinter && (!defaultPrinterName || defaultPrinterName.includes('Generic'))) {
+            printers.forEach(p => { p.isDefault = false; });
+            physicalPrinter.isDefault = true;
+          } else if (!printers.some(p => p.isDefault)) {
+            printers[0].isDefault = true;
+          }
+          return printers;
+        }
+      }
+    } catch (regErr) {
+      console.warn('⚠️ Registry printer detection fallback, trying pdf-to-printer:', regErr);
+    }
+
+    // Secondary fallback: pdf-to-printer library
+    try {
+      const ptpModule = await import('pdf-to-printer');
+      const ptp = (ptpModule as any).default || ptpModule;
       const printers = await ptp.getPrinters();
       const defaultP = await ptp.getDefaultPrinter();
 
@@ -46,7 +101,7 @@ export class WindowsPrinterService extends EventEmitter implements PrinterServic
         model: p.name,
       }));
     } catch (err) {
-      console.warn('⚠️ pdf-to-printer getPrinters failed, trying powershell fallback:', err);
+      console.warn('⚠️ pdf-to-printer getPrinters failed, trying PowerShell:', err);
       try {
         const { stdout } = await execAsync('powershell -Command "Get-Printer | Select-Object -ExpandProperty Name"');
         const lines = stdout.split('\r\n').map(l => l.trim()).filter(Boolean);
@@ -65,22 +120,27 @@ export class WindowsPrinterService extends EventEmitter implements PrinterServic
 
   async getDefaultPrinter(): Promise<PrinterInfo | null> {
     const printers = await this.getPrinters();
-    const targetName = process.env.WINDOWS_PRINTER_NAME || this.defaultPrinterName || 'MF280';
-    if (targetName) {
+    const targetName = process.env.WINDOWS_PRINTER_NAME || this.defaultPrinterName;
+    if (targetName && targetName.trim().length > 0) {
       const match = printers.find(p => p.name.toLowerCase().includes(targetName.toLowerCase()));
       if (match) return match;
     }
-    // Prefer physical printers (like MF280 Series, HP, Canon, Brother, Epson)
-    const physical = printers.find(p => 
-      !p.name.includes('PDF') && 
-      !p.name.includes('XPS') && 
-      !p.name.includes('OneNote') && 
+
+    // Prefer real physical hardware printer (e.g. MF280 Series, Canon, HP, Brother, Epson)
+    const physical = printers.find(p =>
+      !p.name.includes('PDF') &&
+      !p.name.includes('XPS') &&
+      !p.name.includes('OneNote') &&
       !p.name.includes('Fax') &&
+      !p.name.includes('Generic') &&
       !p.name.includes('OrCAD')
     );
     if (physical) return physical;
+
+    // Check system default printer
     const defaultP = printers.find(p => p.isDefault);
     if (defaultP) return defaultP;
+
     return printers[0] || null;
   }
 
@@ -93,7 +153,26 @@ export class WindowsPrinterService extends EventEmitter implements PrinterServic
    */
   async submitPrintJob(job: PrintJobRequest): Promise<PrintJobResult> {
     const jobId = `win_print_${++this.jobCounter}`;
-    const targetPrinter = job.printerName || (await this.getDefaultPrinter())?.name;
+    const installedPrinters = await this.getPrinters();
+    
+    // Resolve target printer: if job requested dummy "Default Printer" or "Detecting", pick real detected physical printer
+    let targetPrinter = job.printerName;
+    if (
+      !targetPrinter ||
+      targetPrinter.toLowerCase().includes('default printer') ||
+      targetPrinter.toLowerCase().includes('detecting')
+    ) {
+      targetPrinter = (await this.getDefaultPrinter())?.name || undefined;
+    } else {
+      // Validate that targetPrinter exists in installed printers, or match by substring
+      const matched = installedPrinters.find(p => p.name.toLowerCase().includes(targetPrinter!.toLowerCase()));
+      if (matched) {
+        targetPrinter = matched.name;
+      } else {
+        console.warn(`⚠️ Target printer "${targetPrinter}" not matched to installed devices. Falling back to default printer.`);
+        targetPrinter = (await this.getDefaultPrinter())?.name || undefined;
+      }
+    }
 
     console.log(`🖨️ [WindowsPrinterService] Printing "${job.filePath}" to printer: "${targetPrinter}"...`);
 
@@ -113,7 +192,18 @@ export class WindowsPrinterService extends EventEmitter implements PrinterServic
     this.activeJobs.set(jobId, progress);
     this.emit('progress', { ...progress });
 
-    // Execute silent print in background
+    // Locate bundled SumatraPDF binary across root and workspace dirs
+    const candidates = [
+      'C:\\Users\\ADMIN\\Desktop\\OU  - XPOS\\node_modules\\pdf-to-printer\\dist\\SumatraPDF-3.4.6-32.exe',
+      path.join(process.cwd(), 'node_modules/pdf-to-printer/dist/SumatraPDF-3.4.6-32.exe'),
+      path.join(process.cwd(), '../node_modules/pdf-to-printer/dist/SumatraPDF-3.4.6-32.exe'),
+      path.join(process.cwd(), '../../node_modules/pdf-to-printer/dist/SumatraPDF-3.4.6-32.exe'),
+      path.join(__dirname, '../../node_modules/pdf-to-printer/dist/SumatraPDF-3.4.6-32.exe'),
+      path.join(__dirname, '../../../node_modules/pdf-to-printer/dist/SumatraPDF-3.4.6-32.exe'),
+    ];
+    const sumatraPdfPath = candidates.find(c => fs.existsSync(c)) || undefined;
+
+    // Execute physical hardware print in background
     (async () => {
       try {
         const ptp = await import('pdf-to-printer');
@@ -121,6 +211,9 @@ export class WindowsPrinterService extends EventEmitter implements PrinterServic
         const printOptions: any = {};
         if (targetPrinter) {
           printOptions.printer = targetPrinter;
+        }
+        if (sumatraPdfPath) {
+          printOptions.sumatraPdfPath = sumatraPdfPath;
         }
         if (job.copies && job.copies > 1) {
           printOptions.copies = job.copies;
@@ -135,34 +228,52 @@ export class WindowsPrinterService extends EventEmitter implements PrinterServic
           printOptions.orientation = 'landscape';
         }
 
-        console.log(`🖨️ [WindowsPrinterService] Sending print options:`, printOptions);
+        console.log(`🖨️ [WindowsPrinterService] Sending physical print job with options:`, printOptions);
         await ptp.print(job.filePath, printOptions);
 
-        console.log(`✅ [WindowsPrinterService] Successfully sent job ${jobId} to physical printer "${targetPrinter}"!`);
+        console.log(`✅ [WindowsPrinterService] Successfully sent job ${jobId} to physical hardware printer "${targetPrinter}"!`);
 
-        // Emit progress completion
+        // Emit real progress completion
         progress.currentPage = totalPrintPages;
         progress.status = 'READY';
         this.emit('progress', { ...progress });
         this.emit('completed', { jobId, status: 'READY', currentPage: totalPrintPages, totalPages: totalPrintPages });
         this.activeJobs.delete(jobId);
       } catch (err: any) {
-        console.error(`❌ [WindowsPrinterService] Printing error on printer "${targetPrinter}":`, err);
-        // Fallback: Try Windows PowerShell Start-Process PrintTo
+        console.error(`❌ [WindowsPrinterService] SumatraPDF module printing error on printer "${targetPrinter}":`, err);
+
+        // Fallback 1: Direct silent CLI execution of SumatraPDF.exe (bypasses module and PowerShell CLR)
         try {
-          console.log(`🔄 Attempting PowerShell PrintTo fallback for printer "${targetPrinter}"...`);
-          const psCommand = targetPrinter
-            ? `powershell -Command "Start-Process -FilePath '${job.filePath}' -Verb PrintTo -ArgumentList '${targetPrinter}' -PassThru | Out-Null"`
-            : `powershell -Command "Start-Process -FilePath '${job.filePath}' -Verb Print -PassThru | Out-Null"`;
-          await execAsync(psCommand);
-          console.log(`✅ [WindowsPrinterService] PowerShell fallback printed successfully!`);
-          
+          if (sumatraPdfPath && fs.existsSync(sumatraPdfPath)) {
+            console.log(`🔄 Attempting direct SumatraPDF CLI print to "${targetPrinter}"...`);
+            const copiesSetting = (job.copies && job.copies > 1) ? `-print-settings "${job.copies}x"` : '';
+            const cliCmd = `"${sumatraPdfPath}" -print-to "${targetPrinter}" ${copiesSetting} -silent "${job.filePath}"`;
+            await execAsync(cliCmd);
+            console.log(`✅ [WindowsPrinterService] Direct SumatraPDF CLI printed successfully to "${targetPrinter}"!`);
+
+            progress.currentPage = totalPrintPages;
+            this.emit('completed', { jobId, status: 'READY', currentPage: totalPrintPages, totalPages: totalPrintPages });
+            this.activeJobs.delete(jobId);
+            return;
+          }
+        } catch (cliErr: any) {
+          console.warn(`Direct SumatraPDF CLI fallback error:`, cliErr);
+        }
+
+        // Fallback 2: Native Windows print command
+        try {
+          console.log(`🔄 Attempting native Windows print fallback for printer "${targetPrinter}"...`);
+          const nativeCmd = `cmd.exe /c print /D:"${targetPrinter}" "${job.filePath}"`;
+          await execAsync(nativeCmd);
+          console.log(`✅ [WindowsPrinterService] Native print fallback sent to "${targetPrinter}"!`);
+
           progress.currentPage = totalPrintPages;
           this.emit('completed', { jobId, status: 'READY', currentPage: totalPrintPages, totalPages: totalPrintPages });
           this.activeJobs.delete(jobId);
-        } catch (fallbackErr) {
-          console.error(`❌ PowerShell fallback failed:`, fallbackErr);
-          this.emit('completed', { jobId, status: 'READY', currentPage: totalPrintPages, totalPages: totalPrintPages });
+        } catch (fallbackErr: any) {
+          console.error(`❌ Native print fallback also failed:`, fallbackErr);
+          this.emit('failed', { jobId, status: 'FAILED', error: fallbackErr?.message || err?.message || 'Physical print failed' });
+          this.activeJobs.delete(jobId);
         }
       }
     })();

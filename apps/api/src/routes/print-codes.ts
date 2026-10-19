@@ -98,9 +98,10 @@ router.post('/generate', async (req: Request, res: Response) => {
 
     // Resolve allowed kiosk ID
     let resolvedKioskId = null;
-    if (allowedKioskId) {
+    const targetKiosk = allowedKioskId || job.kioskId;
+    if (targetKiosk) {
       const kiosk = await prisma.kiosk.findFirst({
-        where: { OR: [{ id: allowedKioskId }, { displayId: allowedKioskId }] },
+        where: { OR: [{ id: targetKiosk }, { displayId: targetKiosk }] },
       });
       resolvedKioskId = kiosk?.id || null;
     }
@@ -518,23 +519,26 @@ router.post('/pair-kiosk', async (req: Request, res: Response) => {
       },
     });
 
+    const targetPrinterName = kiosk.printer?.name || (await printer?.getDefaultPrinter?.())?.name || 'Canon MF280 Series';
+
     const printPayload = {
       jobId: printCode.job.id,
       displayId: printCode.job.displayId,
       downloadUrl,
       totalPages: printCode.job.totalPages,
-      currentPage: 1,
+      currentPage: 0,
       fileName: printCode.job.file.originalName,
       colorMode: printCode.job.colorMode,
       copies: printCode.job.copies,
       sides: printCode.job.sides,
       paperSize: printCode.job.paperSize,
+      printerName: targetPrinterName,
       kioskId: kiosk.displayId,
       kioskName: kiosk.name,
       timestamp: new Date().toISOString(),
     };
 
-    console.log(`⚡ Instant QR Pairing: Job ${printCode.job.displayId} paired to Kiosk ${kiosk.displayId}`);
+    console.log(`⚡ Instant QR Pairing: Job ${printCode.job.displayId} paired to Kiosk ${kiosk.displayId} (Printer: ${targetPrinterName})`);
 
     // Real-time Push to Kiosk via WebSockets
     if (io) {
@@ -548,8 +552,9 @@ router.post('/pair-kiosk', async (req: Request, res: Response) => {
         jobId: printCode.job.id,
         displayId: printCode.job.displayId,
         status: 'PRINTING',
-        currentPage: 1,
+        currentPage: 0,
         totalPages: printCode.job.totalPages,
+        printerName: targetPrinterName,
         kiosk: {
           displayId: kiosk.displayId,
           name: kiosk.name,
@@ -562,8 +567,9 @@ router.post('/pair-kiosk', async (req: Request, res: Response) => {
         jobId: printCode.job.id,
         displayId: printCode.job.displayId,
         status: 'PRINTING',
-        currentPage: 1,
+        currentPage: 0,
         totalPages: printCode.job.totalPages,
+        printerName: targetPrinterName,
         kiosk: {
           displayId: kiosk.displayId,
           name: kiosk.name,
@@ -576,39 +582,8 @@ router.post('/pair-kiosk', async (req: Request, res: Response) => {
         displayId: printCode.job.displayId,
         status: 'PRINTING',
         kioskId: kiosk.displayId,
+        printerName: targetPrinterName,
       });
-    }
-
-    // Trigger physical printing in background
-    if (printer) {
-      try {
-        const fs = require('fs');
-        const path = require('path');
-        const os = require('os');
-        let tempFilePath = typeof storage.getLocalFilePath === 'function'
-          ? storage.getLocalFilePath(printCode.job.file.storageKey)
-          : null;
-
-        if (!tempFilePath || !fs.existsSync(tempFilePath)) {
-          const tempDir = path.join(os.tmpdir(), 'xpos-print');
-          if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-          const safeBaseName = path.basename(printCode.job.file.originalName, path.extname(printCode.job.file.originalName)).replace(/[^a-zA-Z0-9_-]/g, '_');
-          tempFilePath = path.join(tempDir, `${printCode.job.id}_${safeBaseName}.pdf`);
-          const fileBuffer = await storage.downloadFile(printCode.job.file.storageKey);
-          fs.writeFileSync(tempFilePath, fileBuffer);
-        }
-
-        printer.submitPrintJob({
-          filePath: tempFilePath,
-          colorMode: printCode.job.colorMode,
-          paperSize: printCode.job.paperSize,
-          sides: printCode.job.sides,
-          copies: printCode.job.copies || 1,
-          totalPages: printCode.job.totalPages,
-        }).catch((err: any) => console.warn('Printer background job submit notice:', err?.message));
-      } catch (err: any) {
-        console.warn('Physical printer trigger note:', err?.message);
-      }
     }
 
     await prisma.auditLog.create({

@@ -25,7 +25,7 @@ import {
   RefreshCw,
   Zap,
 } from 'lucide-react';
-import { generatePrintCode, getJob, pairKioskWithCode } from '../../lib/api';
+import { generatePrintCode, getJob, pairKioskWithCode, getKiosks } from '../../lib/api';
 import { getRandomCharmingLine, getRandomCompletionLine } from '../../lib/charming-lines';
 import { playKeySound } from '../../lib/sound';
 
@@ -53,7 +53,18 @@ function CodeContent() {
   const [pairingStatus, setPairingStatus] = useState('');
   const [scannerError, setScannerError] = useState('');
   const [manualKioskId, setManualKioskId] = useState('');
+  const [availableKiosks, setAvailableKiosks] = useState<any[]>([]);
   const html5QrCodeRef = useRef<any>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Load available kiosks for quick 1-tap release
+  useEffect(() => {
+    getKiosks().then(res => {
+      if (res.success && Array.isArray(res.data)) {
+        setAvailableKiosks(res.data.filter((k: any) => k.status === 'ACTIVE'));
+      }
+    }).catch(() => {});
+  }, []);
 
   // Random charming line for active code screen
   const [charmingLine, setCharmingLine] = useState<string>('');
@@ -162,27 +173,40 @@ function CodeContent() {
     handlePairWithKiosk(extractedKioskId, extractedToken);
   }, [isPairing, code, resolvedJobId]);
 
-  // ── Explicit Camera Request for Mobile Browsers ──
-  const handleOpenScanner = async () => {
+  // ── Mobile QR Scanner Activation ──
+  const handleOpenScanner = () => {
     playKeySound('tap');
     setScannerError('');
     setShowScanner(true);
-    setPairingStatus('Requesting camera access...');
+    setPairingStatus('Opening scanner...');
+  };
 
-    // On mobile devices (iOS Safari / Android Chrome), explicitly request camera permission on user gesture
-    if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' } },
-        });
-        // Stop the probe stream so Html5Qrcode can bind immediately
-        stream.getTracks().forEach((track) => track.stop());
-      } catch (err: any) {
-        console.warn('Native mobile camera prompt response:', err);
-        if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
-          setScannerError('Camera access was denied. Please allow camera in your browser settings or type Station ID below.');
-        }
+  // ── Native Mobile Camera Photo Scanner (Works 100% on Mobile / HTTP / Local IP) ──
+  const handleMobilePhotoCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    playKeySound('tap');
+    setScannerError('');
+    setPairingStatus('Scanning QR from camera photo...');
+
+    try {
+      const { Html5Qrcode } = await import('html5-qrcode');
+      // Stop live camera if running
+      if (html5QrCodeRef.current) {
+        try {
+          await html5QrCodeRef.current.stop();
+        } catch {}
       }
+
+      const scanner = new Html5Qrcode('kiosk-qr-scanner-box');
+      const decodedText = await scanner.scanFile(file, true);
+      console.log('📷 Decoded QR from mobile photo:', decodedText);
+      handleQrScanned(decodedText);
+    } catch (err: any) {
+      console.warn('Failed to parse QR from photo:', err);
+      setScannerError('Could not read QR code from photo. Please ensure the QR on the kiosk screen is clear and well-lit, or type Station ID below.');
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -203,17 +227,24 @@ function CodeContent() {
     async function initScanner() {
       try {
         setScannerError('');
-        setPairingStatus('Opening camera feed...');
+        setPairingStatus('Initializing camera...');
         const { Html5Qrcode } = await import('html5-qrcode');
 
         if (isCancelled) return;
+
+        const hasMediaDevices = typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia);
+        if (!hasMediaDevices) {
+          // Non-secure context (e.g. mobile accessing local IP http://192.168.x.x)
+          setPairingStatus('Tap "Snap Photo" below to scan with mobile camera');
+          return;
+        }
 
         const scannerId = 'kiosk-qr-scanner-box';
         const scanner = new Html5Qrcode(scannerId);
         html5QrCodeRef.current = scanner;
 
         const config = {
-          fps: 20,
+          fps: 15,
           qrbox: { width: 230, height: 230 },
           aspectRatio: 1.0,
         };
@@ -237,19 +268,26 @@ function CodeContent() {
           );
           if (!isCancelled) setPairingStatus('Point camera at the kiosk screen QR code');
         } catch (envErr) {
-          // Fallback to any camera
-          await scanner.start(
-            { facingMode: 'user' },
-            config,
-            successCallback,
-            () => {}
-          );
-          if (!isCancelled) setPairingStatus('Point camera at the kiosk screen QR code');
+          // Fallback to user/front camera or default
+          try {
+            await scanner.start(
+              { facingMode: 'user' },
+              config,
+              successCallback,
+              () => {}
+            );
+            if (!isCancelled) setPairingStatus('Point camera at the kiosk screen QR code');
+          } catch (fallbackErr) {
+            console.warn('Live stream camera start error:', fallbackErr);
+            if (!isCancelled) {
+              setPairingStatus('Live preview blocked. Tap "Snap Photo" below to scan!');
+            }
+          }
         }
       } catch (err: any) {
         console.warn('Scanner camera error:', err);
         if (!isCancelled) {
-          setScannerError('Camera access required. Please tap "Enable Camera" or type Station ID below.');
+          setScannerError('Camera feed unavailable. Tap "Snap Photo" below or pick your Station!');
         }
       }
     }
@@ -885,32 +923,78 @@ function CodeContent() {
                   )}
                 </div>
 
+                {/* Hidden Native Mobile Camera Capture (Works 100% on iOS / Android / HTTP) */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={handleMobilePhotoCapture}
+                />
+
+                {/* 📸 Direct Mobile Camera Snap Button */}
+                <motion.button
+                  type="button"
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full mt-3 py-3 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 text-white font-black text-xs md:text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25 border-2 border-emerald-400 transition-all active:scale-95"
+                >
+                  <Camera className="w-4 h-4 text-white" />
+                  <span>📸 SNAP KIOSK QR (MOBILE CAMERA)</span>
+                </motion.button>
+
                 {/* Status or Error Banner */}
                 {scannerError ? (
                   <div className="mt-3 p-3 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 text-xs font-bold text-center w-full">
                     <div className="flex items-center justify-center gap-1.5 mb-1">
-                      <AlertCircle className="w-4 h-4 text-rose-500" />
+                      <AlertCircle className="w-4 h-4 text-rose-500 shrink-0" />
                       <span>{scannerError}</span>
                     </div>
                     {/* Grant Camera Permission Quick Trigger */}
                     <button
                       type="button"
-                      onClick={handleOpenScanner}
-                      className="mt-2 py-1.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs inline-flex items-center gap-1 shadow-sm active:scale-95 transition-all"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="mt-2 py-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1 shadow-sm active:scale-95 transition-all"
                     >
                       <Camera className="w-3.5 h-3.5" />
-                      <span>Tap to Request Camera</span>
+                      <span>Snap Photo with Camera Instead</span>
                     </button>
                   </div>
                 ) : (
-                  <p className="mt-3 text-xs font-semibold text-slate-600">
-                    {pairingStatus || 'Align the QR code on the kiosk screen inside the frame'}
+                  <p className="mt-2 text-xs font-semibold text-slate-500">
+                    {pairingStatus || 'Point camera at kiosk QR or tap "Snap Kiosk QR" above'}
                   </p>
                 )}
 
-                {/* Manual Station ID Fallback (Preserves 100% Functionality if camera is denied) */}
-                <div className="w-full mt-4 pt-4 border-t border-slate-100 space-y-2">
-                  <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                {/* 1-Tap Quick Release Station List */}
+                {availableKiosks.length > 0 && (
+                  <div className="w-full mt-3 pt-3 border-t border-slate-100 space-y-2">
+                    <p className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                      Or 1-Tap Quick Release Station:
+                    </p>
+                    <div className="flex flex-wrap items-center justify-center gap-1.5 max-h-28 overflow-y-auto">
+                      {availableKiosks.map((k) => (
+                        <button
+                          key={k.id}
+                          type="button"
+                          disabled={isPairing}
+                          onClick={() => handlePairWithKiosk(k.displayId)}
+                          className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-blue-50 text-slate-800 hover:text-blue-700 border border-slate-200 text-xs font-mono font-black transition-all active:scale-95 flex items-center gap-1 shadow-xs"
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                          <span>{k.displayId}</span>
+                          <span className="text-[10px] text-slate-400 font-sans font-medium">({k.location || 'Station'})</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Manual Station ID Fallback */}
+                <div className="w-full mt-3 pt-3 border-t border-slate-100 space-y-2">
+                  <p className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
                     Or Enter Station ID Manually
                   </p>
                   <div className="flex gap-2">

@@ -78,6 +78,7 @@ export function setupWebSocket(io: SocketIOServer, prisma: PrismaClient): void {
     // ── Join kiosk room ──
     socket.on('join_kiosk', async (data: { kioskId: string }) => {
       if (data.kioskId) {
+        socket.join(`kiosk:${data.kioskId}`);
         const kiosk = await prisma.kiosk.findFirst({
           where: {
             OR: [{ id: data.kioskId }, { displayId: data.kioskId }],
@@ -86,6 +87,7 @@ export function setupWebSocket(io: SocketIOServer, prisma: PrismaClient): void {
 
         if (kiosk) {
           socket.join(`kiosk:${kiosk.id}`);
+          socket.join(`kiosk:${kiosk.displayId}`);
           socket.data.kioskId = kiosk.id;
           socket.data.kioskDisplayId = kiosk.displayId;
           console.log(`🖥️  Kiosk joined: ${kiosk.displayId}`);

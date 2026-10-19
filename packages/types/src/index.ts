@@ -178,6 +178,8 @@ export interface PaymentOrder {
   currency: string;
   qrData?: string;
   upiLink?: string;
+  gpayLink?: string;
+  payeeVpa?: string;
   expiresAt: string;
 }
 

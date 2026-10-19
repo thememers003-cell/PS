@@ -293,7 +293,7 @@ router.post('/:id/print', async (req: Request, res: Response) => {
 
     const job = await prisma.printJob.findFirst({
       where: { OR: [{ id: req.params.id }, { displayId: req.params.id }] },
-      include: { file: true, kiosk: true },
+      include: { file: true, kiosk: { include: { printer: true } } },
     });
 
     if (!job) {
@@ -325,6 +325,20 @@ router.post('/:id/print', async (req: Request, res: Response) => {
       console.log(`⚡ Direct fast-print path used: "${tempFilePath}"`);
     }
 
+    // Determine target printer name (request body -> kiosk assigned printer -> default physical)
+    let targetPrinterName = req.body.printerName || job.kiosk?.printer?.name || undefined;
+    if (
+      !targetPrinterName ||
+      targetPrinterName.toLowerCase().includes('detecting') ||
+      targetPrinterName === 'Default Printer' ||
+      targetPrinterName === 'Auto-Detected Printer'
+    ) {
+      const defaultPrinter = await printer.getDefaultPrinter?.();
+      if (defaultPrinter?.name) {
+        targetPrinterName = defaultPrinter.name;
+      }
+    }
+
     // Update status to PRINTING
     await prisma.printJob.update({
       where: { id: job.id },
@@ -340,10 +354,27 @@ router.post('/:id/print', async (req: Request, res: Response) => {
       totalPages: job.totalPages * (job.copies || 1),
     });
 
-    // Submit to SavaPage (or mock printer)
+    if (job.kioskId) {
+      io.to(`kiosk:${job.kioskId}`).emit('job_progress', {
+        jobId: job.id,
+        currentPage: 0,
+        totalPages: job.totalPages * (job.copies || 1),
+        printerName: targetPrinterName,
+      });
+      if (job.kiosk?.displayId) {
+        io.to(`kiosk:${job.kiosk.displayId}`).emit('job_progress', {
+          jobId: job.id,
+          currentPage: 0,
+          totalPages: job.totalPages * (job.copies || 1),
+          printerName: targetPrinterName,
+        });
+      }
+    }
+
+    // Submit to physical hardware printer via WindowsPrinterService / SumatraPDF
     const printResult = await printer.submitPrintJob({
       filePath: tempFilePath,
-      printerName: req.body.printerName || undefined,
+      printerName: targetPrinterName,
       colorMode: job.colorMode,
       paperSize: job.paperSize,
       sides: job.sides,
@@ -352,7 +383,28 @@ router.post('/:id/print', async (req: Request, res: Response) => {
       totalPages: job.totalPages,
     });
 
-    console.log(`🖨️ Print job submitted: ${printResult.jobId} (status: ${printResult.status})`);
+    console.log(`🖨️ Print job submitted: ${printResult.jobId} (status: ${printResult.status}) to "${targetPrinterName}"`);
+
+    if (printResult.status === 'FAILED') {
+      await prisma.printJob.update({
+        where: { id: job.id },
+        data: { status: 'FAILED', errorMessage: printResult.error || 'Printer error' },
+      });
+      io.to(`session:${job.sessionId}`).emit('job_update', {
+        type: 'JOB_UPDATE',
+        jobId: job.id,
+        displayId: job.displayId,
+        status: 'FAILED',
+        error: printResult.error,
+      });
+      if (job.kioskId) {
+        io.to(`kiosk:${job.kioskId}`).emit('job_failed', {
+          jobId: job.id,
+          error: printResult.error || 'Failed to print document',
+        });
+      }
+      return res.status(500).json({ success: false, error: printResult.error || 'Failed to print document' });
+    }
 
     // Listen for progress events from the printer service
     const onProgress = (data: any) => {
@@ -379,11 +431,65 @@ router.post('/:id/print', async (req: Request, res: Response) => {
             totalPages: data.totalPages,
           });
         }
+        if (job.kiosk?.displayId && job.kiosk.displayId !== job.kioskId) {
+          io.to(`kiosk:${job.kiosk.displayId}`).emit('job_progress', {
+            jobId: job.id,
+            currentPage: data.currentPage,
+            totalPages: data.totalPages,
+          });
+        }
+      }
+    };
+
+    const cleanupListeners = () => {
+      printer.removeListener('progress', onProgress);
+      printer.removeListener('completed', onCompleted);
+      printer.removeListener('failed', onFailed);
+    };
+
+    const onFailed = (data: any) => {
+      if (data.jobId === printResult.jobId) {
+        console.error(`❌ [jobRoutes] Physical print failed for job ${job.id}:`, data.error);
+        cleanupListeners();
+
+        prisma.printJob.update({
+          where: { id: job.id },
+          data: { status: 'FAILED', errorMessage: data.error || 'Physical print failed' },
+        }).catch(() => {});
+
+        io.to(`session:${job.sessionId}`).emit('job_update', {
+          type: 'JOB_UPDATE',
+          jobId: job.id,
+          displayId: job.displayId,
+          status: 'FAILED',
+          error: data.error || 'Printer error',
+        });
+
+        io.to('admin').emit('job_updated', {
+          id: job.id,
+          displayId: job.displayId,
+          status: 'FAILED',
+          error: data.error,
+        });
+
+        if (job.kioskId) {
+          io.to(`kiosk:${job.kioskId}`).emit('job_failed', {
+            jobId: job.id,
+            error: data.error || 'Physical printer failed to produce page',
+          });
+        }
+        if (job.kiosk?.displayId && job.kiosk.displayId !== job.kioskId) {
+          io.to(`kiosk:${job.kiosk.displayId}`).emit('job_failed', {
+            jobId: job.id,
+            error: data.error || 'Physical printer failed to produce page',
+          });
+        }
       }
     };
 
     const onCompleted = (data: any) => {
       if (data.jobId === printResult.jobId) {
+        cleanupListeners();
         const completedDate = new Date();
         Promise.all([
           prisma.printJob.update({
@@ -418,11 +524,11 @@ router.post('/:id/print', async (req: Request, res: Response) => {
         if (job.kioskId) {
           io.to(`kiosk:${job.kioskId}`).emit('job_completed', { jobId: job.id });
         }
+        if (job.kiosk?.displayId && job.kiosk.displayId !== job.kioskId) {
+          io.to(`kiosk:${job.kiosk.displayId}`).emit('job_completed', { jobId: job.id });
+        }
 
         // Immediate Privacy Cleanup: Delete document from storage & temp cache
-        printer.removeListener('progress', onProgress);
-        printer.removeListener('completed', onCompleted);
-
         try {
           if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
         } catch {}
@@ -433,22 +539,18 @@ router.post('/:id/print', async (req: Request, res: Response) => {
             console.log(`🔒 [Privacy & Storage] Deleted "${job.file.originalName}" (${job.file.storageKey}) immediately after printing.`);
           }).catch(() => {});
         }
-
-        // Mark print code as USED
-        prisma.printCode.updateMany({
-          where: { jobId: job.id, status: 'ACTIVE' },
-          data: { status: 'USED', usedAt: new Date() },
-        }).catch(() => {});
       }
     };
 
     printer.on('progress', onProgress);
     printer.on('completed', onCompleted);
+    printer.on('failed', onFailed);
 
     res.json({
       success: true,
       data: {
         printJobId: printResult.jobId,
+        printerName: targetPrinterName,
         status: printResult.status,
         message: 'Print job submitted to printer',
       },

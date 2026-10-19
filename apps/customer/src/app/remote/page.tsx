@@ -24,13 +24,17 @@ import {
   Plus,
   Bot,
   Zap,
-  Check
+  Check,
+  Search,
+  MapPin,
+  Radio,
 } from 'lucide-react';
-import { createSession, uploadFile, calculatePrice, getKiosks, getPricing, createJob } from '../../lib/api';
+import { io } from 'socket.io-client';
+import { createSession, uploadFile, calculatePrice, getKiosks, getPricing, createJob, getApiUrl } from '../../lib/api';
 import { renderPdfPages } from '../../lib/pdf-preview';
 import { playKeySound } from '../../lib/sound';
 
-type Step = 'upload' | 'settings' | 'demo' | 'kiosk' | 'summary';
+type Step = 'kiosk' | 'upload' | 'settings' | 'demo' | 'summary';
 
 interface FileSettingsState {
   file: File;
@@ -49,7 +53,7 @@ function RemotePrintContent() {
   const searchParams = useSearchParams();
   const preselectedKiosk = searchParams.get('kiosk');
 
-  const [step, setStep] = useState<Step>('upload');
+  const [step, setStep] = useState<Step>(preselectedKiosk ? 'upload' : 'kiosk');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -93,7 +97,8 @@ function RemotePrintContent() {
   // Kiosk state
   const [kiosks, setKiosks] = useState<any[]>([]);
   const [selectedKiosk, setSelectedKiosk] = useState<string | null>(preselectedKiosk);
-  const [anyKiosk, setAnyKiosk] = useState(true);
+  const [anyKiosk, setAnyKiosk] = useState(!preselectedKiosk);
+  const [kioskSearch, setKioskSearch] = useState('');
 
   // Live dynamic pricing rules
   const [pricingRules, setPricingRules] = useState<{ BW: number; COLOR: number }>({ BW: 2, COLOR: 10 });
@@ -111,6 +116,15 @@ function RemotePrintContent() {
     currency: string;
     breakdown: string;
   } | null>(null);
+
+  const loadKiosksList = useCallback(async () => {
+    try {
+      const res = await getKiosks();
+      if (res.success && res.data) {
+        setKiosks(res.data);
+      }
+    } catch (e) {}
+  }, []);
 
   // Init session on mount
   useEffect(() => {
@@ -143,6 +157,60 @@ function RemotePrintContent() {
     }
     loadData();
   }, []);
+
+  // When selected kiosk changes, update pricing rules specifically for that kiosk
+  useEffect(() => {
+    async function loadKioskPricing() {
+      try {
+        const url = selectedKiosk ? `${getApiUrl()}/api/pricing?kiosk=${selectedKiosk}` : `${getApiUrl()}/api/pricing`;
+        const res = await fetch(url);
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          const bw = json.data.find((r: any) => r.colorMode === 'BW' && r.paperSize === 'A4');
+          const color = json.data.find((r: any) => r.colorMode === 'COLOR' && r.paperSize === 'A4');
+          setPricingRules({
+            BW: bw ? bw.pricePerPage : 2,
+            COLOR: color ? color.pricePerPage : 10,
+          });
+        }
+      } catch (e) {}
+    }
+    loadKioskPricing();
+  }, [selectedKiosk]);
+
+  // Live WebSocket sync when admin creates, modifies, or deletes kiosks, or updates pricing
+  useEffect(() => {
+    const socket = io(getApiUrl(), { transports: ['websocket', 'polling'] });
+    socket.on('kiosks_updated', () => {
+      console.log('⚡ Live kiosk fleet updated from admin');
+      loadKiosksList();
+    });
+    socket.on('kiosk_updated', () => {
+      loadKiosksList();
+    });
+    socket.on('pricing_updated', (data: any) => {
+      console.log('⚡ Live dynamic pricing updated from admin:', data);
+      if (data?.kioskId && selectedKiosk && data.kioskId !== selectedKiosk && data.kioskDisplayId !== selectedKiosk) {
+        return;
+      }
+      if (typeof data?.bwPrice === 'number' || typeof data?.colorPrice === 'number') {
+        setPricingRules(prev => ({
+          BW: typeof data.bwPrice === 'number' ? data.bwPrice : prev.BW,
+          COLOR: typeof data.colorPrice === 'number' ? data.colorPrice : prev.COLOR,
+        }));
+      } else if (data?.rules && Array.isArray(data.rules)) {
+        const bw = data.rules.find((r: any) => r.colorMode === 'BW' && r.paperSize === 'A4');
+        const color = data.rules.find((r: any) => r.colorMode === 'COLOR' && r.paperSize === 'A4');
+        setPricingRules({
+          BW: bw && typeof bw.pricePerPage === 'number' ? bw.pricePerPage : 2,
+          COLOR: color && typeof color.pricePerPage === 'number' ? color.pricePerPage : 10,
+        });
+      }
+    });
+    return () => {
+      socket.disconnect();
+    };
+  }, [loadKiosksList, selectedKiosk]);
 
   // Total selected pages calculation across all documents
   const totalCalculatedPages = perFileSettings.length > 0
@@ -390,7 +458,7 @@ function RemotePrintContent() {
       const jobRes = await createJob({
         sessionId: activeSessionId,
         fileId: fileInfo.id,
-        kioskId: null,
+        kioskId: anyKiosk ? null : selectedKiosk,
         printMethod: 'CODE',
         colorMode,
         paperSize: 'A4',
@@ -420,10 +488,10 @@ function RemotePrintContent() {
 
   // Mascot Guide Message helper
   const getMascotMessage = () => {
+    if (step === 'kiosk') return "Choose your preferred station or pick 'Universal Pickup' to print at any active kiosk!";
     if (step === 'upload') return "Drop up to 10 files or photos & I'll merge them instantly!";
     if (step === 'settings') return "Customize color, double side & tap pages to customize!";
     if (step === 'demo') return "Swipe through your real document gallery & tap pages to toggle!";
-    if (step === 'kiosk') return "Universal Pickup: use your 6-digit code at any kiosk station!";
     return "Review your order summary & pay securely via UPI!";
   };
 
@@ -434,11 +502,11 @@ function RemotePrintContent() {
         <div className="flex items-center justify-between mb-3">
           <button
             onClick={() => {
-              if (step === 'upload') router.back();
+              if (step === 'kiosk') router.back();
+              else if (step === 'upload') setStep(preselectedKiosk ? 'upload' : 'kiosk');
               else if (step === 'settings') setStep('upload');
               else if (step === 'demo') setStep('settings');
-              else if (step === 'kiosk') setStep('demo');
-              else if (step === 'summary') setStep('kiosk');
+              else if (step === 'summary') setStep('demo');
             }}
             className="flex items-center gap-2 text-blue-600 hover:text-blue-800 transition-all font-bold text-sm bg-blue-50 px-4 py-2 rounded-xl border border-blue-100 shadow-sm active:scale-95"
           >
@@ -447,13 +515,13 @@ function RemotePrintContent() {
           </button>
 
           <div className="flex items-center gap-2">
-            {['upload', 'settings', 'demo', 'kiosk', 'summary'].map((s, i) => (
+            {['kiosk', 'upload', 'settings', 'demo', 'summary'].map((s, i) => (
               <div
                 key={s}
                 className={`w-2.5 h-2.5 rounded-full transition-all duration-300 ${
                   step === s
                     ? 'bg-blue-600 scale-125 shadow-sm shadow-blue-500'
-                    : i < ['upload', 'settings', 'demo', 'kiosk', 'summary'].indexOf(step)
+                    : i < ['kiosk', 'upload', 'settings', 'demo', 'summary'].indexOf(step)
                     ? 'bg-blue-300'
                     : 'bg-slate-200'
                 }`}
@@ -983,7 +1051,8 @@ function RemotePrintContent() {
         )}
 
         {/* ════════════════════════════════════════════════ */}
-        {/* STEP 4: KIOSK SELECTION (UNIVERSAL PICKUP) */}
+        {/* ════════════════════════════════════════════════ */}
+        {/* STEP 1: CHOOSE PRINTING LOCATION & KIOSK */}
         {/* ════════════════════════════════════════════════ */}
         {step === 'kiosk' && (
           <motion.div
@@ -992,45 +1061,171 @@ function RemotePrintContent() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -12 }}
             transition={{ duration: 0.22 }}
-            className="flex-1 flex flex-col space-y-5 my-auto"
+            className="flex-1 flex flex-col space-y-4 my-auto"
           >
             <div>
-              <span className="text-xs font-black text-blue-700 bg-blue-100 px-3.5 py-1 rounded-full uppercase tracking-wider">Universal Pickup</span>
-              <h1 className="text-2xl md:text-3xl font-black text-slate-900 mt-2 mb-1 tracking-tight">Select Pickup Kiosk</h1>
-              <p className="text-slate-600 text-xs md:text-sm font-medium">Your 6-digit release code works at any active Print Bro kiosk station</p>
+              <span className="text-xs font-black text-blue-700 bg-blue-100 px-3.5 py-1 rounded-full uppercase tracking-wider inline-flex items-center gap-1.5">
+                <MapPin className="w-3.5 h-3.5 text-blue-600" />
+                <span>Step 1: Choose Station</span>
+              </span>
+              <h1 className="text-2xl md:text-3xl font-black text-slate-900 mt-2 mb-1 tracking-tight">
+                Where will you pick up?
+              </h1>
+              <p className="text-slate-600 text-xs md:text-sm font-medium">
+                Choose a specific station location or select Universal Pickup to print anywhere
+              </p>
             </div>
 
-            {/* Enlarged, Spacious & Prominent Universal Kiosk Box */}
-            <div className="flex-1 flex flex-col justify-center">
+            {/* 🔍 Search Input Bar */}
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={kioskSearch}
+                onChange={(e) => setKioskSearch(e.target.value)}
+                placeholder="Search by campus, building, room or kiosk ID..."
+                className="w-full pl-10 pr-9 py-3 bg-white border-2 border-slate-200 rounded-2xl text-xs md:text-sm font-medium text-slate-900 placeholder:text-slate-400 shadow-sm focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100 transition-all"
+              />
+              {kioskSearch && (
+                <button
+                  type="button"
+                  onClick={() => setKioskSearch('')}
+                  className="w-5 h-5 rounded-full bg-slate-200 text-slate-600 hover:bg-slate-300 absolute right-3 top-1/2 -translate-y-1/2 flex items-center justify-center text-[10px] font-bold"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            {/* Stations List Container */}
+            <div className="space-y-3 overflow-y-auto max-h-[380px] pr-1 scrollbar-thin">
+              {/* Option 1: Universal Pickup */}
               <motion.div
-                initial={{ scale: 0.98 }}
-                animate={{ scale: 1 }}
-                className="w-full p-6 md:p-8 rounded-[24px] border-2 border-blue-500 bg-gradient-to-b from-blue-50/90 via-white to-blue-50/50 shadow-xl shadow-blue-500/10 text-left space-y-4"
+                whileHover={{ scale: 1.01 }}
+                whileTap={{ scale: 0.99 }}
+                onClick={() => {
+                  playKeySound('tap');
+                  setAnyKiosk(true);
+                  setSelectedKiosk(null);
+                }}
+                className={`w-full p-4 md:p-5 rounded-2xl border-2 transition-all cursor-pointer text-left space-y-2 ${
+                  anyKiosk
+                    ? 'border-blue-600 bg-blue-50/70 shadow-md shadow-blue-500/10'
+                    : 'border-slate-200 bg-white hover:border-blue-300 shadow-sm'
+                }`}
               >
                 <div className="flex items-start justify-between">
-                  <div className="w-14 h-14 rounded-2xl bg-blue-600 text-white flex items-center justify-center shadow-lg shadow-blue-500/25 flex-shrink-0">
-                    <Printer className="w-7 h-7" />
+                  <div className="flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                      anyKiosk ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-slate-600'
+                    }`}>
+                      <Printer className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="font-black text-slate-900 text-sm md:text-base">Any Available Kiosk</h4>
+                        <span className="text-[10px] font-black uppercase text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full">
+                          Universal
+                        </span>
+                      </div>
+                      <p className="text-slate-500 text-xs font-medium">Walk up to any active Print Bro kiosk and enter code</p>
+                    </div>
                   </div>
-                  <span className="text-xs bg-emerald-100 text-emerald-800 font-black px-3.5 py-1 rounded-full border border-emerald-200 inline-flex items-center gap-1.5 shadow-xs">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                    Universal Access
-                  </span>
-                </div>
-
-                <div>
-                  <h3 className="text-xl md:text-2xl font-black text-slate-900 mb-1 tracking-tight">
-                    Any Available Print Bro Kiosk
-                  </h3>
-                  <p className="text-slate-600 text-sm font-medium leading-relaxed">
-                    Walk up to <strong className="text-slate-900 font-bold">ANY active Print Bro kiosk</strong> near you, tap <strong className="text-blue-700 font-bold">"ENTER CODE"</strong>, and collect your printed pages instantly.
-                  </p>
-                </div>
-
-                <div className="pt-3 border-t border-blue-100 flex items-center justify-between text-xs font-bold text-slate-500">
-                  <span>⚡ 24-Hour Code Validity</span>
-                  <span className="text-blue-700 font-black">All Stations Supported ✓</span>
+                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+                    anyKiosk ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white'
+                  }`}>
+                    {anyKiosk && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                  </div>
                 </div>
               </motion.div>
+
+              {/* Physical Kiosks from Fleet */}
+              {kiosks
+                .filter((k) => {
+                  if (!kioskSearch.trim()) return true;
+                  const q = kioskSearch.toLowerCase();
+                  return (
+                    k.name?.toLowerCase().includes(q) ||
+                    k.location?.toLowerCase().includes(q) ||
+                    k.displayId?.toLowerCase().includes(q)
+                  );
+                })
+                .map((kiosk) => {
+                  const isSelected = !anyKiosk && (selectedKiosk === kiosk.displayId || selectedKiosk === kiosk.id);
+                  const isOnline = kiosk.status === 'ACTIVE';
+
+                  return (
+                    <motion.div
+                      key={kiosk.id || kiosk.displayId}
+                      whileHover={isOnline ? { scale: 1.01 } : {}}
+                      whileTap={isOnline ? { scale: 0.99 } : {}}
+                      onClick={() => {
+                        if (!isOnline) return;
+                        playKeySound('tap');
+                        setAnyKiosk(false);
+                        setSelectedKiosk(kiosk.displayId);
+                      }}
+                      className={`w-full p-4 rounded-2xl border-2 transition-all text-left space-y-2 ${
+                        !isOnline
+                          ? 'border-amber-200 bg-amber-50/40 opacity-70 cursor-not-allowed'
+                          : isSelected
+                          ? 'border-blue-600 bg-blue-50/70 shadow-md shadow-blue-500/10 cursor-pointer'
+                          : 'border-slate-200 bg-white hover:border-blue-300 shadow-sm cursor-pointer'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-start gap-3">
+                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5 ${
+                            isSelected ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            <MapPin className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="font-black text-slate-900 text-sm md:text-base leading-tight">
+                                {kiosk.name}
+                              </h4>
+                              <span className="font-mono text-[10px] font-black text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md">
+                                {kiosk.displayId}
+                              </span>
+                            </div>
+                            <p className="text-slate-600 text-xs font-bold mt-0.5 flex items-center gap-1">
+                              <span>📍 {kiosk.location}</span>
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full border inline-flex items-center gap-1 ${
+                            isOnline
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : 'bg-amber-50 text-amber-700 border-amber-200'
+                          }`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+                            <span>{isOnline ? 'Ready' : 'Maintenance'}</span>
+                          </span>
+
+                          <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+                            isSelected ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white'
+                          }`}>
+                            {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+
+              {kiosks.length > 0 && kiosks.filter(k => {
+                if (!kioskSearch.trim()) return true;
+                const q = kioskSearch.toLowerCase();
+                return k.name?.toLowerCase().includes(q) || k.location?.toLowerCase().includes(q) || k.displayId?.toLowerCase().includes(q);
+              }).length === 0 && (
+                <div className="p-6 rounded-2xl bg-white border border-slate-200 text-center space-y-1">
+                  <p className="font-black text-slate-700 text-xs">No matching stations found</p>
+                  <p className="text-slate-400 text-xs">Try searching for a different building, campus, or room name.</p>
+                </div>
+              )}
             </div>
           </motion.div>
         )}
@@ -1084,7 +1279,11 @@ function RemotePrintContent() {
               </div>
               <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-600 font-bold">Pickup Station</span>
-                <span className="text-slate-900 font-bold">Any Available Print Bro Kiosk</span>
+                <span className="text-slate-900 font-bold text-right">
+                  {anyKiosk
+                    ? 'Any Available Print Bro Kiosk'
+                    : `${kiosks.find((k) => k.displayId === selectedKiosk)?.name || selectedKiosk} (${kiosks.find((k) => k.displayId === selectedKiosk)?.location || selectedKiosk})`}
+                </span>
               </div>
               <div className="h-px bg-slate-200" />
               <div className="flex justify-between items-baseline pt-2">
@@ -1102,6 +1301,20 @@ function RemotePrintContent() {
 
       {/* 🌟 Curvey & Lifted Bottom Action Button Area */}
       <div className="pt-4 pb-2">
+        {step === 'kiosk' && (
+          <motion.button
+            whileHover={{ scale: 1.01 }}
+            whileTap={{ scale: 0.99 }}
+            onClick={() => {
+              playKeySound('tap');
+              setStep('upload');
+            }}
+            className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-[20px] font-black text-base flex items-center justify-center gap-2 shadow-lg shadow-blue-500/25 active:scale-[0.98] transition-all"
+          >
+            Confirm Location & Upload Files <ArrowRight className="w-4 h-4" />
+          </motion.button>
+        )}
+
         {step === 'upload' && fileInfo && (
           <motion.button
             whileHover={{ scale: 1.01 }}
@@ -1136,25 +1349,11 @@ function RemotePrintContent() {
             whileTap={{ scale: 0.99 }}
             onClick={() => {
               playKeySound('tap');
-              setStep('kiosk');
-            }}
-            className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-[20px] font-black text-base flex items-center justify-center gap-2 shadow-lg shadow-blue-500/25 active:scale-[0.98] transition-all"
-          >
-            Select Kiosk Station <ArrowRight className="w-4 h-4" />
-          </motion.button>
-        )}
-
-        {step === 'kiosk' && (
-          <motion.button
-            whileHover={{ scale: 1.01 }}
-            whileTap={{ scale: 0.99 }}
-            onClick={() => {
-              playKeySound('tap');
               setStep('summary');
             }}
             className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-[20px] font-black text-base flex items-center justify-center gap-2 shadow-lg shadow-blue-500/25 active:scale-[0.98] transition-all"
           >
-            Review My Order <ArrowRight className="w-4 h-4" />
+            Review Order Summary <ArrowRight className="w-4 h-4" />
           </motion.button>
         )}
 

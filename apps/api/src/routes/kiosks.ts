@@ -14,7 +14,6 @@ router.get('/', async (req: Request, res: Response) => {
     const showAll = req.query.showAll === 'true';
 
     const kiosks = await prisma.kiosk.findMany({
-      where: showAll ? {} : { status: 'ACTIVE' },
       include: { printer: true },
       orderBy: { displayId: 'asc' },
     });
@@ -44,7 +43,7 @@ router.get('/', async (req: Request, res: Response) => {
 router.post('/', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.locals.prisma;
-    const { displayId, name, location, printerName = 'MF280 Series', colorCapabilities = ['BW', 'COLOR'] } = req.body;
+    const { displayId, name, location, printerName = 'Default Printer', colorCapabilities = ['BW', 'COLOR'] } = req.body;
 
     if (!displayId || !name || !location) {
       return res.status(400).json({ success: false, error: 'Kiosk ID, Name, and Location are required' });
@@ -67,14 +66,20 @@ router.post('/', async (req: Request, res: Response) => {
         qrUrl,
         printer: {
           create: {
-            name: printerName || 'MF280 Series',
-            model: 'Canon Laser Multifunction',
+            name: printerName || 'Default Printer',
+            model: 'Auto-Detected Printer',
             status: 'READY',
           },
         },
       },
       include: { printer: true },
     });
+
+    const io = req.app.locals.io;
+    if (io) {
+      io.emit('kiosks_updated', { type: 'CREATED', kiosk });
+      io.to('admin').emit('kiosk_updated');
+    }
 
     res.json({
       success: true,
@@ -100,6 +105,8 @@ router.post('/', async (req: Request, res: Response) => {
 router.get('/:id', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.locals.prisma;
+    const printerService = req.app.locals.printer;
+
     const kiosk = await prisma.kiosk.findFirst({
       where: {
         OR: [
@@ -114,6 +121,37 @@ router.get('/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, error: 'Kiosk not found' });
     }
 
+    let printerName = kiosk.printer?.name || null;
+    let printerStatus = kiosk.printer?.status || 'READY';
+
+    // If printer name is generic or unset, auto-detect physical printer on host
+    if (!printerName || printerName === 'Default Printer' || printerName === 'Auto-Detected Printer') {
+      try {
+        const detectedDefault = await printerService?.getDefaultPrinter?.();
+        if (detectedDefault?.name) {
+          printerName = detectedDefault.name;
+          printerStatus = detectedDefault.status || 'READY';
+          // Persist detected printer
+          await prisma.printer.upsert({
+            where: { kioskId: kiosk.id },
+            create: {
+              kioskId: kiosk.id,
+              name: printerName,
+              model: printerName,
+              status: printerStatus,
+            },
+            update: {
+              name: printerName,
+              model: printerName,
+              status: printerStatus,
+            },
+          });
+        }
+      } catch (detErr) {
+        console.warn('Auto printer detection in kiosk GET /:id:', detErr);
+      }
+    }
+
     res.json({
       success: true,
       data: {
@@ -122,8 +160,8 @@ router.get('/:id', async (req: Request, res: Response) => {
         name: kiosk.name,
         location: kiosk.location,
         status: kiosk.status,
-        printerStatus: kiosk.printer?.status || 'OFFLINE',
-        printerName: kiosk.printer?.name || null,
+        printerStatus: printerStatus,
+        printerName: printerName,
         qrUrl: kiosk.qrUrl,
         lastHeartbeat: kiosk.lastHeartbeat?.toISOString() || null,
         isOnline: kiosk.lastHeartbeat
@@ -133,6 +171,125 @@ router.get('/:id', async (req: Request, res: Response) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to get kiosk details' });
+  }
+});
+
+// Detect installed printers on host PC and auto-sync with this kiosk
+router.get('/:id/detected-printers', async (req: Request, res: Response) => {
+  try {
+    const prisma = req.app.locals.prisma;
+    const printerService = req.app.locals.printer;
+    const io = req.app.locals.io;
+
+    let printers = [];
+    if (printerService && typeof printerService.getPrinters === 'function') {
+      printers = await printerService.getPrinters();
+    }
+
+    const defaultPrinter = (printerService && typeof printerService.getDefaultPrinter === 'function')
+      ? await printerService.getDefaultPrinter()
+      : null;
+
+    const kiosk = await prisma.kiosk.findFirst({
+      where: {
+        OR: [{ id: req.params.id }, { displayId: req.params.id }],
+      },
+      include: { printer: true },
+    });
+
+    if (kiosk && defaultPrinter?.name) {
+      // Auto-assign detected hardware printer if kiosk has generic or no printer
+      if (!kiosk.printer || kiosk.printer.name === 'Default Printer' || kiosk.printer.name === 'Auto-Detected Printer') {
+        const assigned = await prisma.printer.upsert({
+          where: { kioskId: kiosk.id },
+          create: {
+            kioskId: kiosk.id,
+            name: defaultPrinter.name,
+            model: defaultPrinter.name,
+            status: 'READY',
+          },
+          update: {
+            name: defaultPrinter.name,
+            model: defaultPrinter.name,
+            status: 'READY',
+          },
+        });
+
+        if (io) {
+          io.to(`kiosk:${kiosk.displayId}`).emit('printer_assigned', {
+            printerName: defaultPrinter.name,
+            status: 'READY',
+          });
+          io.to('admin').emit('kiosk_updated');
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        printers,
+        defaultPrinter,
+        activePrinter: kiosk?.printer?.name || defaultPrinter?.name || 'Default Printer',
+      },
+    });
+  } catch (error) {
+    console.error('Failed to get detected printers:', error);
+    res.status(500).json({ success: false, error: 'Failed to detect printers' });
+  }
+});
+
+// Explicitly assign/change a detected printer to a kiosk
+router.post('/:id/assign-printer', async (req: Request, res: Response) => {
+  try {
+    const prisma = req.app.locals.prisma;
+    const io = req.app.locals.io;
+    const { printerName, model } = req.body;
+
+    if (!printerName) {
+      return res.status(400).json({ success: false, error: 'Printer name is required' });
+    }
+
+    const kiosk = await prisma.kiosk.findFirst({
+      where: { OR: [{ id: req.params.id }, { displayId: req.params.id }] },
+      include: { printer: true },
+    });
+
+    if (!kiosk) {
+      return res.status(404).json({ success: false, error: 'Kiosk not found' });
+    }
+
+    const updatedPrinter = await prisma.printer.upsert({
+      where: { kioskId: kiosk.id },
+      create: {
+        kioskId: kiosk.id,
+        name: printerName,
+        model: model || printerName,
+        status: 'READY',
+      },
+      update: {
+        name: printerName,
+        model: model || printerName,
+        status: 'READY',
+      },
+    });
+
+    if (io) {
+      io.to(`kiosk:${kiosk.displayId}`).emit('printer_assigned', {
+        printerName,
+        status: 'READY',
+      });
+      io.to(`kiosk:${kiosk.id}`).emit('printer_assigned', {
+        printerName,
+        status: 'READY',
+      });
+      io.to('admin').emit('kiosk_updated');
+    }
+
+    res.json({ success: true, data: updatedPrinter });
+  } catch (error) {
+    console.error('Failed to assign printer:', error);
+    res.status(500).json({ success: false, error: 'Failed to assign printer' });
   }
 });
 

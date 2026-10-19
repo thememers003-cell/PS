@@ -2,10 +2,13 @@ const path = require('path');
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  reactStrictMode: true,
+  reactStrictMode: false,
   transpilePackages: ['@xpos/types'],
-  webpack: (config) => {
+  webpack: (config, { dev }) => {
     config.resolve.alias['@'] = path.resolve(__dirname, 'src');
+    if (dev) {
+      config.cache = false; // Disable pack file disk caching on Windows to prevent ArrayBuffer OOM
+    }
     return config;
   },
   env: {
