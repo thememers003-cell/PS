@@ -1,6 +1,6 @@
 // ============================================================
 // XPOS Payment — PhonePe Payment Provider
-// Supports both PhonePe Payment Gateway (PG v1) & Direct PhonePe UPI
+// Supports PhonePe Standard Checkout V2 (OAuth 2.0) & Direct UPI
 // ============================================================
 
 import crypto from 'crypto';
@@ -10,6 +10,9 @@ import type { PaymentProvider } from './index';
 
 export interface PhonePeConfig {
   merchantId?: string;
+  clientId?: string;
+  clientSecret?: string;
+  clientVersion?: string;
   saltKey?: string;
   keyIndex?: number;
   env?: 'UAT' | 'PROD';
@@ -21,14 +24,21 @@ export interface PhonePeConfig {
 export class PhonePeProvider implements PaymentProvider {
   name = 'phonepe';
   private config: PhonePeConfig;
-  private pendingOrders = new Map<string, { amount: number; currency: string; status: string; createdAt: number; providerRef?: string }>();
+  private pendingOrders = new Map<string, { amount: number; currency: string; status: string; createdAt: number; providerRef?: string; redirectUrl?: string }>();
+  
+  // OAuth Token Cache
+  private cachedToken: string | null = null;
+  private tokenExpiresAt: number = 0;
 
   constructor(customConfig?: Partial<PhonePeConfig>) {
     this.config = {
-      merchantId: process.env.PHONEPE_MERCHANT_ID || 'PGTESTPAYUAT',
-      saltKey: process.env.PHONEPE_SALT_KEY || '099eb0cd-02cf-4e2a-8aca-3e6c6aff0399',
+      merchantId: process.env.PHONEPE_MERCHANT_ID || 'M236NFVVSAXD2',
+      clientId: process.env.PHONEPE_CLIENT_ID || 'SU2610191744120003675634',
+      clientSecret: process.env.PHONEPE_CLIENT_SECRET || '51d26195-be6f-47ee-949a-297591229cce',
+      clientVersion: process.env.PHONEPE_CLIENT_VERSION || '1',
+      saltKey: process.env.PHONEPE_SALT_KEY || process.env.PHONEPE_CLIENT_SECRET || '51d26195-be6f-47ee-949a-297591229cce',
       keyIndex: parseInt(process.env.PHONEPE_KEY_INDEX || '1'),
-      env: (process.env.PHONEPE_ENV as 'UAT' | 'PROD') || 'UAT',
+      env: (process.env.PHONEPE_ENV as 'UAT' | 'PROD') || 'PROD',
       vpa: process.env.PHONEPE_MERCHANT_VPA || process.env.UPI_MERCHANT_VPA || 'pkt-8498864658@okbizaxis',
       merchantName: process.env.PHONEPE_MERCHANT_NAME || process.env.UPI_MERCHANT_NAME || 'Print Bro',
       callbackUrl: process.env.PHONEPE_CALLBACK_URL || `${process.env.API_URL || 'http://localhost:4000'}/api/payments/webhook`,
@@ -36,10 +46,56 @@ export class PhonePeProvider implements PaymentProvider {
     };
   }
 
-  private getBaseUrl(): string {
-    return this.config.env === 'PROD'
-      ? 'https://api.phonepe.com/apis/hermes'
-      : 'https://api-preprod.phonepe.com/apis/pg-sandbox';
+  /**
+   * PhonePe V2 Identity Manager OAuth 2.0 Token Generation
+   */
+  private async getAccessToken(): Promise<string | null> {
+    const now = Date.now();
+    if (this.cachedToken && this.tokenExpiresAt > now + 60000) {
+      return this.cachedToken;
+    }
+
+    const { clientId, clientSecret, clientVersion, env } = this.config;
+    if (!clientId || !clientSecret) {
+      console.warn('⚠️ PhonePe OAuth: Missing clientId or clientSecret');
+      return null;
+    }
+
+    try {
+      const tokenUrl = env === 'PROD'
+        ? 'https://api.phonepe.com/apis/identity-manager/v1/oauth/token'
+        : 'https://api-preprod.phonepe.com/apis/pg-sandbox/v1/oauth/token';
+
+      const params = new URLSearchParams();
+      params.append('client_id', clientId);
+      params.append('client_secret', clientSecret);
+      params.append('client_version', clientVersion || '1');
+      params.append('grant_type', 'client_credentials');
+
+      const res = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: params.toString(),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error(`❌ PhonePe OAuth Token Error [${res.status}]:`, errText);
+        return null;
+      }
+
+      const data: any = await res.json();
+      if (data.access_token) {
+        this.cachedToken = data.access_token;
+        this.tokenExpiresAt = (data.expires_at ? data.expires_at * 1000 : now + 3500 * 1000);
+        return this.cachedToken;
+      }
+    } catch (err) {
+      console.error('❌ PhonePe getAccessToken failed:', err);
+    }
+    return null;
   }
 
   /**
@@ -60,12 +116,12 @@ export class PhonePeProvider implements PaymentProvider {
       createdAt: Date.now(),
     });
 
-    const vpa = this.config.vpa || '8498864658@ybl';
+    const vpa = this.config.vpa || 'pkt-8498864658@okbizaxis';
     const name = encodeURIComponent(this.config.merchantName || 'Print Bro');
     const note = encodeURIComponent(`Print Order ${metadata.displayId || metadata.jobId || uniqueRef}`);
     const formattedAmount = amount.toFixed(2);
 
-    // 1. Standard universal UPI link
+    // Standard Universal UPI Deep Link (fallback)
     const baseParams = [
       `pa=${vpa}`,
       `pn=${name}`,
@@ -75,48 +131,57 @@ export class PhonePeProvider implements PaymentProvider {
     ];
     const upiLink = `upi://pay?${baseParams.join('&')}`;
 
-    // 2. Direct PhonePe App Deep Link & Android Intent
-    const phonepeLink = `phonepe://pay?${baseParams.join('&')}`;
-    const gpayLink = `intent://pay?${baseParams.join('&')}#Intent;scheme=upi;package=com.phonepe.app;end`;
-
-    // 3. If PhonePe PG Gateway keys configured, initialize PG order
     let pgRedirectUrl: string | undefined;
-    if (this.config.merchantId && this.config.saltKey && !this.config.merchantId.includes('YOUR_')) {
+
+    // 1. PhonePe V2 Standard Checkout (Live Production)
+    const token = await this.getAccessToken();
+    if (token) {
       try {
+        const checkoutUrl = this.config.env === 'PROD'
+          ? 'https://api.phonepe.com/apis/pg/checkout/v2/pay'
+          : 'https://api-preprod.phonepe.com/apis/pg-sandbox/checkout/v2/pay';
+
         const amountInPaise = Math.round(amount * 100);
-        const pgPayload = {
-          merchantId: this.config.merchantId,
-          merchantTransactionId: orderId,
-          merchantUserId: metadata.sessionId || `user_${orderId}`,
+        const redirectUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/job/${metadata.jobId || ''}`;
+
+        const payload = {
+          merchantOrderId: orderId,
           amount: amountInPaise,
-          redirectUrl: `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/job/${metadata.jobId || ''}`,
-          redirectMode: 'REDIRECT',
-          callbackUrl: this.config.callbackUrl,
-          paymentInstrument: {
-            type: 'PAY_PAGE',
+          expireAfter: 1200,
+          paymentFlow: {
+            type: 'PG_CHECKOUT',
+            merchantUrls: {
+              redirectUrl,
+            },
           },
         };
 
-        const base64Payload = Buffer.from(JSON.stringify(pgPayload)).toString('base64');
-        const stringToHash = base64Payload + '/pg/v1/pay' + this.config.saltKey;
-        const sha256 = crypto.createHash('sha256').update(stringToHash).digest('hex');
-        const checksum = `${sha256}###${this.config.keyIndex}`;
-
-        const response = await fetch(`${this.getBaseUrl()}/pg/v1/pay`, {
+        const res = await fetch(checkoutUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-VERIFY': checksum,
+            'Authorization': `O-Bearer ${token}`,
           },
-          body: JSON.stringify({ request: base64Payload }),
+          body: JSON.stringify(payload),
         });
 
-        const data: any = await response.json();
-        if (data.success && data.data?.instrumentResponse?.redirectInfo?.url) {
-          pgRedirectUrl = data.data.instrumentResponse.redirectInfo.url;
+        if (res.ok) {
+          const data: any = await res.json();
+          if (data.redirectUrl) {
+            pgRedirectUrl = data.redirectUrl;
+            console.log(`✅ [PhonePe V2 PG] Live order created: ${orderId} -> ${pgRedirectUrl.slice(0, 50)}...`);
+            const existing = this.pendingOrders.get(orderId);
+            if (existing) {
+              existing.redirectUrl = pgRedirectUrl;
+              existing.providerRef = data.orderId;
+            }
+          }
+        } else {
+          const errText = await res.text();
+          console.warn('⚠️ PhonePe V2 Checkout returned error:', res.status, errText);
         }
-      } catch (err) {
-        console.warn('⚠️ PhonePe PG API call error, falling back to dynamic UPI:', err);
+      } catch (pgErr) {
+        console.warn('⚠️ PhonePe V2 Checkout exception:', pgErr);
       }
     }
 
@@ -124,28 +189,28 @@ export class PhonePeProvider implements PaymentProvider {
       orderId,
       amount,
       currency,
-      qrData: upiLink,
-      upiLink,
-      gpayLink: pgRedirectUrl || gpayLink || phonepeLink,
+      qrData: pgRedirectUrl || upiLink,
+      upiLink: pgRedirectUrl || upiLink,
+      gpayLink: pgRedirectUrl || upiLink,
       payeeVpa: vpa,
-      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      expiresAt: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
     };
   }
 
   /**
-   * Verify payment status
+   * Real-Time Verify payment status
    */
   async verifyPayment(orderId: string, paymentData: any = {}): Promise<PaymentVerification> {
     const order = this.pendingOrders.get(orderId);
 
-    // 1. If marked paid via webhook
+    // 1. If marked paid via webhook callback
     if (order && order.status === 'PAID') {
       return {
         verified: true,
         paymentId: `pay_${orderId}`,
         amount: order.amount,
         status: 'PAID',
-        providerRef: order.providerRef || `PHONEPE_REF_${orderId}`,
+        providerRef: order.providerRef || `PHONEPE_${orderId}`,
       };
     }
 
@@ -166,39 +231,40 @@ export class PhonePeProvider implements PaymentProvider {
       };
     }
 
-    // 3. Check PhonePe PG Status API if merchant keys configured
-    if (this.config.merchantId && this.config.saltKey && !this.config.merchantId.includes('YOUR_')) {
+    // 3. Check PhonePe V2 Status API in Real-Time
+    const token = await this.getAccessToken();
+    if (token) {
       try {
-        const endpoint = `/pg/v1/status/${this.config.merchantId}/${orderId}`;
-        const stringToHash = endpoint + this.config.saltKey;
-        const sha256 = crypto.createHash('sha256').update(stringToHash).digest('hex');
-        const checksum = `${sha256}###${this.config.keyIndex}`;
+        const statusUrl = this.config.env === 'PROD'
+          ? `https://api.phonepe.com/apis/pg/checkout/v2/order/${orderId}/status?details=false`
+          : `https://api-preprod.phonepe.com/apis/pg-sandbox/checkout/v2/order/${orderId}/status?details=false`;
 
-        const res = await fetch(`${this.getBaseUrl()}${endpoint}`, {
+        const res = await fetch(statusUrl, {
           method: 'GET',
           headers: {
             'Content-Type': 'application/json',
-            'X-VERIFY': checksum,
-            'X-MERCHANT-ID': this.config.merchantId,
+            'Authorization': `O-Bearer ${token}`,
           },
         });
 
-        const data: any = await res.json();
-        if (data.success && data.code === 'PAYMENT_SUCCESS') {
-          if (order) {
-            order.status = 'PAID';
-            order.providerRef = data.data?.transactionId || `PP_${Date.now()}`;
+        if (res.ok) {
+          const data: any = await res.json();
+          if (data.state === 'COMPLETED') {
+            if (order) {
+              order.status = 'PAID';
+              order.providerRef = data.orderId || `PP_${Date.now()}`;
+            }
+            return {
+              verified: true,
+              paymentId: `pay_${orderId}`,
+              amount: (data.amount || 0) / 100,
+              status: 'PAID',
+              providerRef: data.orderId || `PHONEPE_${orderId}`,
+            };
           }
-          return {
-            verified: true,
-            paymentId: `pay_${orderId}`,
-            amount: (data.data?.amount || 0) / 100,
-            status: 'PAID',
-            providerRef: data.data?.transactionId || `PHONEPE_${orderId}`,
-          };
         }
-      } catch (e) {
-        console.warn('⚠️ PhonePe Status check error:', e);
+      } catch (err) {
+        console.warn('⚠️ PhonePe V2 Status check error:', err);
       }
     }
 
@@ -218,24 +284,15 @@ export class PhonePeProvider implements PaymentProvider {
     try {
       let decoded: any = payload;
       if (typeof payload === 'object' && payload.response) {
-        // Base64 decoded response
         const jsonStr = Buffer.from(payload.response, 'base64').toString('utf8');
         decoded = JSON.parse(jsonStr);
       }
 
-      if (this.config.saltKey && signatureHeader && payload.response) {
-        const stringToHash = payload.response + this.config.saltKey;
-        const sha256 = crypto.createHash('sha256').update(stringToHash).digest('hex');
-        const expectedChecksum = `${sha256}###${this.config.keyIndex}`;
-        if (signatureHeader !== expectedChecksum && !signatureHeader.startsWith(sha256)) {
-          return { success: false, error: 'Invalid PhonePe webhook signature' };
-        }
-      }
-
-      const orderId = decoded.data?.merchantTransactionId || decoded.merchantTransactionId;
-      const isSuccess = decoded.success === true && (decoded.code === 'PAYMENT_SUCCESS' || decoded.data?.responseCode === 'SUCCESS');
-      const amount = decoded.data?.amount ? decoded.data.amount / 100 : undefined;
-      const providerRef = decoded.data?.transactionId || decoded.transactionId || decoded.data?.paymentInstrument?.utr;
+      const orderId = decoded.data?.merchantOrderId || decoded.merchantOrderId || decoded.data?.merchantTransactionId || decoded.orderId;
+      const state = decoded.data?.state || decoded.state || decoded.code;
+      const isSuccess = state === 'COMPLETED' || state === 'PAYMENT_SUCCESS' || decoded.success === true;
+      const amount = decoded.data?.amount ? decoded.data.amount / 100 : (decoded.amount ? decoded.amount / 100 : undefined);
+      const providerRef = decoded.data?.orderId || decoded.orderId || decoded.data?.transactionId;
 
       if (isSuccess && orderId) {
         const order = this.pendingOrders.get(orderId);
@@ -251,15 +308,16 @@ export class PhonePeProvider implements PaymentProvider {
         };
       }
 
-      return { success: false, error: decoded.message || 'Payment not successful in webhook' };
-    } catch (e: any) {
-      return { success: false, error: e?.message || 'Failed to process PhonePe webhook' };
+      return { success: false, error: 'Payment not completed or unknown order state' };
+    } catch (err: any) {
+      console.error('❌ PhonePe Webhook processing error:', err);
+      return { success: false, error: err.message };
     }
   }
 
   async initiateRefund(paymentId: string, amount: number): Promise<RefundResult> {
     return {
-      refundId: `refund_${uuidv4().slice(0, 8)}`,
+      refundId: `pp_rf_${uuidv4().slice(0, 8)}`,
       amount,
       status: 'SUCCESS',
     };
