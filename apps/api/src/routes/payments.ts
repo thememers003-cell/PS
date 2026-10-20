@@ -82,8 +82,9 @@ router.post('/create', async (req: Request, res: Response) => {
         qrData: order.qrData,
         upiLink: order.upiLink,
         gpayLink: (order as any).gpayLink || order.upiLink,
-        payeeVpa: (order as any).payeeVpa || 'PhonePe PG (M236NFVVSAXD2)',
-        provider: payment.name,
+        checkoutUrl: (order as any).gpayLink || order.upiLink,
+        payeeVpa: 'PhonePe PG (M236NFVVSAXD2)',
+        provider: 'phonepe',
         expiresAt: order.expiresAt,
       },
     });
