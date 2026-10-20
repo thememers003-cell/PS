@@ -224,35 +224,29 @@ function PaymentContent() {
                   className="w-full py-3.5 px-4 rounded-2xl bg-[#5f259f] hover:bg-[#4d1e82] text-white font-black text-sm flex items-center justify-center gap-2 shadow-lg shadow-purple-900/15 active:scale-95 transition-all text-center no-underline cursor-pointer"
                 >
                   <Smartphone className="w-4 h-4 text-purple-200" />
-                  <span>Pay with PhonePe / GPay</span>
+                  <span>Pay with PhonePe / All UPI Apps</span>
                   <ExternalLink className="w-3.5 h-3.5 opacity-60 ml-auto" />
                 </a>
 
-                <a
-                  href={paymentData.upiLink}
-                  className="w-full py-3 px-4 rounded-2xl bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-xs flex items-center justify-center gap-2 border border-blue-200 active:scale-95 transition-all text-center no-underline cursor-pointer"
-                >
-                  <span>Pay via Paytm / Any UPI App</span>
-                </a>
+                <p className="text-[11px] text-slate-400 text-center font-medium">
+                  Tap to pay via PhonePe, Google Pay, Paytm, RuPay, or Cards
+                </p>
               </div>
 
-              {/* Payee VPA Details */}
-              {paymentData.payeeVpa && (
-                <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500 font-medium">
-                  <div className="text-left truncate">
-                    <p className="text-[11px] text-slate-400">Payee Name: <strong className="text-slate-700">CHAI GPT</strong> (Print Bro)</p>
-                    <p className="font-mono text-slate-800 font-bold truncate text-[11px]">{paymentData.payeeVpa}</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => copyVpa(paymentData.payeeVpa)}
-                    className="text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1 text-[11px] bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-200"
-                  >
-                    {copiedVpa ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-                    <span>{copiedVpa ? 'Copied' : 'Copy UPI'}</span>
-                  </button>
+              {/* Payee Merchant Gateway Details */}
+              <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500 font-medium">
+                <div className="text-left truncate">
+                  <p className="text-[11px] text-slate-400">
+                    Payment Gateway: <strong className="text-slate-800">PhonePe PG Live</strong>
+                  </p>
+                  <p className="font-mono text-purple-700 font-bold truncate text-[11px]">
+                    Merchant ID: M236NFVVSAXD2
+                  </p>
                 </div>
-              )}
+                <span className="text-[10px] bg-purple-50 text-purple-700 font-extrabold px-2.5 py-1 rounded-lg border border-purple-200">
+                  PhonePe Verified
+                </span>
+              </div>
             </div>
 
             {/* Optional Manual UTR Entry Dropdown */}

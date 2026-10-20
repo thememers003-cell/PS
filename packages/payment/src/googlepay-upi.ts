@@ -33,7 +33,7 @@ export class GooglePayUpiProvider implements PaymentProvider {
   constructor(config?: Partial<GooglePayUpiConfig>) {
     this.config = {
       vpa: config?.vpa || process.env.UPI_MERCHANT_VPA || 'pkt-8498864658@okbizaxis',
-      merchantName: config?.merchantName || process.env.UPI_REGISTERED_NAME || process.env.UPI_MERCHANT_NAME || 'CHAI GPT',
+      merchantName: config?.merchantName || process.env.UPI_REGISTERED_NAME || process.env.UPI_MERCHANT_NAME || 'Print Bro',
       merchantId: config?.merchantId || process.env.UPI_MERCHANT_ID || process.env.GPAY_MERCHANT_ID || 'BCR2DN7T2HQ6Z6A7',
       mcc: config?.mcc || process.env.UPI_MCC || '7399',
       webhookSecret: config?.webhookSecret || process.env.UPI_WEBHOOK_SECRET || process.env.PAYMENT_WEBHOOK_SECRET || 'xpos_upi_secret_key',

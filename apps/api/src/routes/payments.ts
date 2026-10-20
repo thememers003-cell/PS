@@ -3,6 +3,7 @@
 // ============================================================
 
 import { Router, Request, Response } from 'express';
+import { createPaymentProvider } from '@xpos/payment';
 
 const router = Router();
 
@@ -10,7 +11,7 @@ const router = Router();
 router.post('/create', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.locals.prisma;
-    const payment = req.app.locals.payment;
+    const payment = createPaymentProvider();
     const { jobId } = req.body;
 
     if (!jobId) {
@@ -49,6 +50,7 @@ router.post('/create', async (req: Request, res: Response) => {
       where: { jobId: job.id },
       update: {
         amount: job.totalPrice,
+        provider: payment.name,
         providerOrderId: order.orderId,
         qrData: order.qrData,
         status: 'PAYMENT_PENDING',
@@ -80,7 +82,8 @@ router.post('/create', async (req: Request, res: Response) => {
         qrData: order.qrData,
         upiLink: order.upiLink,
         gpayLink: (order as any).gpayLink || order.upiLink,
-        payeeVpa: (order as any).payeeVpa || process.env.UPI_MERCHANT_VPA || 'pkt-8498864658@okbizaxis',
+        payeeVpa: (order as any).payeeVpa || 'PhonePe PG (M236NFVVSAXD2)',
+        provider: payment.name,
         expiresAt: order.expiresAt,
       },
     });
@@ -94,7 +97,7 @@ router.post('/create', async (req: Request, res: Response) => {
 router.post('/verify', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.locals.prisma;
-    const paymentProvider = req.app.locals.payment;
+    const paymentProvider = createPaymentProvider();
     const io = req.app.locals.io;
     const { paymentId, orderId } = req.body;
     const paymentData = req.body.paymentData || (req.body.utr ? { utr: req.body.utr } : {});

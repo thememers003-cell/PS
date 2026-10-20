@@ -116,7 +116,7 @@ export class PhonePeProvider implements PaymentProvider {
       createdAt: Date.now(),
     });
 
-    const vpa = this.config.vpa || 'pkt-8498864658@okbizaxis';
+    const vpa = this.config.merchantId ? `PhonePe PG (${this.config.merchantId})` : 'PhonePe PG';
     const name = encodeURIComponent(this.config.merchantName || 'Print Bro');
     const note = encodeURIComponent(`Print Order ${metadata.displayId || metadata.jobId || uniqueRef}`);
     const formattedAmount = amount.toFixed(2);

@@ -102,7 +102,10 @@ import { PhonePeProvider } from './phonepe';
 
 // ── Factory ──
 export function createPaymentProvider(): PaymentProvider {
-  const provider = (process.env.PAYMENT_PROVIDER || 'gpay').toLowerCase();
+  const hasPhonePeKeys = Boolean(process.env.PHONEPE_CLIENT_ID || process.env.PHONEPE_MERCHANT_ID);
+  const defaultProvider = hasPhonePeKeys ? 'phonepe' : 'gpay';
+  const provider = (process.env.PAYMENT_PROVIDER || defaultProvider).toLowerCase();
+
   switch (provider) {
     case 'phonepe':
     case 'phonepe-pg':
@@ -116,7 +119,7 @@ export function createPaymentProvider(): PaymentProvider {
     case 'mock':
       return new MockPaymentProvider();
     default:
-      return new GooglePayUpiProvider();
+      return hasPhonePeKeys ? new PhonePeProvider() : new GooglePayUpiProvider();
   }
 }
 
