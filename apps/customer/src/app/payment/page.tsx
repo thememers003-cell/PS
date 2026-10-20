@@ -55,6 +55,14 @@ function PaymentContent() {
           setPaymentData(res.data);
           setStatus('waiting');
 
+          // 🚀 DIRECT PHONEPE PG REDIRECT: Immediately open official PhonePe PG checkout page
+          const pgUrl = res.data.checkoutUrl || res.data.gpayLink;
+          if (pgUrl && pgUrl.startsWith('https://')) {
+            console.log('🚀 Redirecting to official PhonePe PG checkout:', pgUrl);
+            window.location.href = pgUrl;
+            return;
+          }
+
           // Initialize WebSocket to listen for instant Webhook payment confirmation
           const socket = io(getApiUrl(), { transports: ['websocket', 'polling'] });
           socketRef.current = socket;
@@ -220,11 +228,11 @@ function PaymentContent() {
               {/* Mobile Direct Pay Buttons (Auto App Launch) */}
               <div className="pt-2 space-y-2">
                 <a
-                  href={paymentData.gpayLink || paymentData.upiLink}
+                  href={paymentData.checkoutUrl || paymentData.gpayLink || 'https://phonepe.com'}
                   className="w-full py-3.5 px-4 rounded-2xl bg-[#5f259f] hover:bg-[#4d1e82] text-white font-black text-sm flex items-center justify-center gap-2 shadow-lg shadow-purple-900/15 active:scale-95 transition-all text-center no-underline cursor-pointer"
                 >
                   <Smartphone className="w-4 h-4 text-purple-200" />
-                  <span>Pay with PhonePe / All UPI Apps</span>
+                  <span>Launch PhonePe Payment Gateway</span>
                   <ExternalLink className="w-3.5 h-3.5 opacity-60 ml-auto" />
                 </a>
 

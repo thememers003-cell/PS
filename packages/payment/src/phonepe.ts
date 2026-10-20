@@ -141,7 +141,8 @@ export class PhonePeProvider implements PaymentProvider {
           ? 'https://api.phonepe.com/apis/pg/checkout/v2/pay'
           : 'https://api-preprod.phonepe.com/apis/pg-sandbox/checkout/v2/pay';
 
-        const amountInPaise = Math.round(amount * 100);
+        // PhonePe PG strictly enforces minimum 100 paise (₹1.00 INR)
+        const amountInPaise = Math.max(100, Math.round(amount * 100));
         const redirectUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/job/${metadata.jobId || ''}`;
 
         const payload = {
@@ -185,14 +186,16 @@ export class PhonePeProvider implements PaymentProvider {
       }
     }
 
+    const finalUrl = pgRedirectUrl || 'https://phonepe.com';
+
     return {
       orderId,
-      amount,
+      amount: Math.max(1, amount),
       currency,
-      qrData: pgRedirectUrl || upiLink,
-      upiLink: pgRedirectUrl || upiLink,
-      gpayLink: pgRedirectUrl || upiLink,
-      payeeVpa: vpa,
+      qrData: finalUrl,
+      upiLink: finalUrl,
+      gpayLink: finalUrl,
+      payeeVpa: `PhonePe Merchant ID: ${this.config.merchantId}`,
       expiresAt: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
     };
   }

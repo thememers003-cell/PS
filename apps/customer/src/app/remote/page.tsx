@@ -221,7 +221,7 @@ function RemotePrintContent() {
   const calculateDynamicTotal = useCallback(() => {
     const rate = colorMode === 'BW' ? pricingRules.BW : pricingRules.COLOR;
     const baseTotal = totalCalculatedPages * rate * copies;
-    return baseTotal;
+    return Math.max(1, baseTotal);
   }, [totalCalculatedPages, colorMode, pricingRules, copies]);
 
   // Real-time price calculation helper
