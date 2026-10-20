@@ -6,8 +6,8 @@
 const { spawn } = require('child_process');
 const path = require('path');
 
-// Allocate sufficient heap to prevent V8 Zone Out-Of-Memory on Windows
-process.env.NODE_OPTIONS = (process.env.NODE_OPTIONS || '') + ' --max-old-space-size=4096';
+// Use lightweight 1024MB heap allocation per service to prevent V8 Zone Out-Of-Memory on Windows
+process.env.NODE_OPTIONS = (process.env.NODE_OPTIONS || '').replace(/--max-old-space-size=\d+/g, '') + ' --max-old-space-size=1024';
 
 const rootDir = path.resolve(__dirname, '..');
 
