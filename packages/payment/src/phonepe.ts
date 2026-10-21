@@ -47,6 +47,20 @@ export class PhonePeProvider implements PaymentProvider {
   }
 
   /**
+   * Helper: fetch with a hard timeout so TCP resets don't hang the server
+   */
+  private async fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 10000): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...options, signal: controller.signal });
+      return res;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * PhonePe V2 Identity Manager OAuth 2.0 Token Generation
    */
   private async getAccessToken(): Promise<string | null> {
@@ -61,27 +75,25 @@ export class PhonePeProvider implements PaymentProvider {
       return null;
     }
 
+    const tokenUrl = env === 'PROD'
+      ? 'https://api.phonepe.com/apis/identity-manager/v1/oauth/token'
+      : 'https://api-preprod.phonepe.com/apis/pg-sandbox/v1/oauth/token';
+
+    const params = new URLSearchParams();
+    params.append('client_id', clientId);
+    params.append('client_secret', clientSecret);
+    params.append('client_version', clientVersion || '1');
+    params.append('grant_type', 'client_credentials');
+
     try {
-      const tokenUrl = env === 'PROD'
-        ? 'https://api.phonepe.com/apis/identity-manager/v1/oauth/token'
-        : 'https://api-preprod.phonepe.com/apis/pg-sandbox/v1/oauth/token';
-
-      const params = new URLSearchParams();
-      params.append('client_id', clientId);
-      params.append('client_secret', clientSecret);
-      params.append('client_version', clientVersion || '1');
-      params.append('grant_type', 'client_credentials');
-
-      const res = await fetch(tokenUrl, {
+      const res = await this.fetchWithTimeout(tokenUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: params.toString(),
-      });
+      }, 10000);
 
       if (!res.ok) {
-        const errText = await res.text();
+        const errText = await res.text().catch(() => 'no body');
         console.error(`❌ PhonePe OAuth Token Error [${res.status}]:`, errText);
         return null;
       }
@@ -90,10 +102,16 @@ export class PhonePeProvider implements PaymentProvider {
       if (data.access_token) {
         this.cachedToken = data.access_token;
         this.tokenExpiresAt = (data.expires_at ? data.expires_at * 1000 : now + 3500 * 1000);
+        console.log('✅ PhonePe OAuth token obtained, expires:', new Date(this.tokenExpiresAt).toISOString());
         return this.cachedToken;
       }
-    } catch (err) {
-      console.error('❌ PhonePe getAccessToken failed:', err);
+      console.warn('⚠️ PhonePe OAuth: No access_token in response:', JSON.stringify(data));
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        console.error('❌ PhonePe OAuth token request timed out (10s)');
+      } else {
+        console.error('❌ PhonePe getAccessToken failed:', err?.message || err);
+      }
     }
     return null;
   }
@@ -137,13 +155,13 @@ export class PhonePeProvider implements PaymentProvider {
     const token = await this.getAccessToken();
     if (token) {
       try {
-        const checkoutUrl = this.config.env === 'PROD'
+        const checkoutEndpoint = this.config.env === 'PROD'
           ? 'https://api.phonepe.com/apis/pg/checkout/v2/pay'
           : 'https://api-preprod.phonepe.com/apis/pg-sandbox/checkout/v2/pay';
 
         // PhonePe PG strictly enforces minimum 100 paise (₹1.00 INR)
         const amountInPaise = Math.max(100, Math.round(amount * 100));
-        const redirectUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/job/${metadata.jobId || ''}`;
+        const redirectUrl = `${process.env.NEXT_PUBLIC_APP_URL || process.env.API_URL?.replace(':4000', ':3000') || 'http://localhost:3000'}/code`;
 
         const payload = {
           merchantOrderId: orderId,
@@ -157,33 +175,44 @@ export class PhonePeProvider implements PaymentProvider {
           },
         };
 
-        const res = await fetch(checkoutUrl, {
+        console.log(`🚀 [PhonePe V2] Creating checkout order: ${orderId} | ₹${amount} (${amountInPaise} paise)`);
+
+        const res = await this.fetchWithTimeout(checkoutEndpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `O-Bearer ${token}`,
           },
           body: JSON.stringify(payload),
-        });
+        }, 12000);
 
+        const resText = await res.text();
         if (res.ok) {
-          const data: any = await res.json();
+          let data: any = {};
+          try { data = JSON.parse(resText); } catch {}
           if (data.redirectUrl) {
             pgRedirectUrl = data.redirectUrl;
-            console.log(`✅ [PhonePe V2 PG] Live order created: ${orderId} -> ${pgRedirectUrl.slice(0, 50)}...`);
+            console.log(`✅ [PhonePe V2 PG] Live checkout created: ${orderId} -> ${pgRedirectUrl.slice(0, 60)}...`);
             const existing = this.pendingOrders.get(orderId);
             if (existing) {
               existing.redirectUrl = pgRedirectUrl;
-              existing.providerRef = data.orderId;
+              existing.providerRef = data.orderId || data.merchantOrderId;
             }
+          } else {
+            console.warn('⚠️ PhonePe V2 Checkout: no redirectUrl in response:', resText.slice(0, 300));
           }
         } else {
-          const errText = await res.text();
-          console.warn('⚠️ PhonePe V2 Checkout returned error:', res.status, errText);
+          console.warn(`⚠️ PhonePe V2 Checkout error [${res.status}]:`, resText.slice(0, 300));
         }
-      } catch (pgErr) {
-        console.warn('⚠️ PhonePe V2 Checkout exception:', pgErr);
+      } catch (pgErr: any) {
+        if (pgErr?.name === 'AbortError') {
+          console.error('❌ PhonePe V2 Checkout timed out (12s) — network issue or IP not whitelisted');
+        } else {
+          console.error('❌ PhonePe V2 Checkout exception:', pgErr?.message || pgErr);
+        }
       }
+    } else {
+      console.warn('⚠️ Skipping PhonePe checkout — could not obtain OAuth token');
     }
 
     const finalUrl = pgRedirectUrl || 'https://phonepe.com';
@@ -242,16 +271,17 @@ export class PhonePeProvider implements PaymentProvider {
           ? `https://api.phonepe.com/apis/pg/checkout/v2/order/${orderId}/status?details=false`
           : `https://api-preprod.phonepe.com/apis/pg-sandbox/checkout/v2/order/${orderId}/status?details=false`;
 
-        const res = await fetch(statusUrl, {
+        const res = await this.fetchWithTimeout(statusUrl, {
           method: 'GET',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `O-Bearer ${token}`,
           },
-        });
+        }, 8000);
 
         if (res.ok) {
           const data: any = await res.json();
+          console.log(`[PhonePe V2 Status] orderId=${orderId} state=${data.state}`);
           if (data.state === 'COMPLETED') {
             if (order) {
               order.status = 'PAID';
@@ -266,8 +296,12 @@ export class PhonePeProvider implements PaymentProvider {
             };
           }
         }
-      } catch (err) {
-        console.warn('⚠️ PhonePe V2 Status check error:', err);
+      } catch (err: any) {
+        if (err?.name === 'AbortError') {
+          console.warn('⚠️ PhonePe V2 Status check timed out (8s)');
+        } else {
+          console.warn('⚠️ PhonePe V2 Status check error:', err?.message || err);
+        }
       }
     }
 

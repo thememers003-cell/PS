@@ -39,6 +39,7 @@ const services = [
     cwd: path.join(rootDir, 'apps', 'admin'),
     cmd: process.platform === 'win32' ? 'npm.cmd' : 'npm',
     args: ['run', 'dev'],
+    env: { NODE_OPTIONS: '--max-old-space-size=2048' },
   },
 ];
 
@@ -66,7 +67,7 @@ async function startAll() {
     console.log(`⏳ Starting ${svc.name}...`);
     const child = spawn(svc.cmd, svc.args, {
       cwd: svc.cwd,
-      env: { ...process.env },
+      env: { ...process.env, ...(svc.env || {}) },
       stdio: ['inherit', 'pipe', 'pipe'],
       shell: true,
     });
@@ -81,8 +82,8 @@ async function startAll() {
     });
 
     children.push(child);
-    // Stagger starts by 1.8s to avoid memory spikes on Windows V8 compiler
-    await new Promise((r) => setTimeout(r, 1800));
+    // Stagger starts by 3s to avoid memory spikes on Windows V8 compiler
+    await new Promise((r) => setTimeout(r, 3000));
   }
 
   console.log('\n============================================================');

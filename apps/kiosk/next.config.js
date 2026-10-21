@@ -4,6 +4,9 @@ const path = require('path');
 const nextConfig = {
   reactStrictMode: false,
   transpilePackages: ['@xpos/types'],
+  experimental: {
+    optimizePackageImports: ['lucide-react', 'framer-motion'],
+  },
   webpack: (config, { dev }) => {
     config.resolve.alias['@'] = path.resolve(__dirname, 'src');
     if (dev) {
