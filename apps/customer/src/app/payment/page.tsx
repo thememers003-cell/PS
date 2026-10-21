@@ -77,6 +77,10 @@ function PaymentContent() {
         // 2. If no valid HTTPS checkout URL from backend, get live PhonePe session from Next.js route
         if (!isHttpsCheckout) {
           try {
+            const redirectOrigin = window.location.origin.includes('riseupsolutions.in')
+              ? `${window.location.origin}${window.location.pathname.startsWith('/print') ? '/print' : ''}`
+              : 'https://riseupsolutions.in/print';
+
             const nextRes = await fetch('/api/phonepe/create', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -84,7 +88,7 @@ function PaymentContent() {
                 jobId,
                 amount: amount || res?.data?.amount || 1,
                 displayId,
-                redirectUrl: `${window.location.origin}/code?jobId=${jobId}&displayId=${displayId || ''}`,
+                redirectUrl: `${redirectOrigin}/code?jobId=${jobId}&displayId=${displayId || ''}`,
               }),
             });
             const nextData = await nextRes.json();

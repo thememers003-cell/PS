@@ -163,8 +163,7 @@ export class PhonePeProvider implements PaymentProvider {
         const amountInPaise = Math.max(100, Math.round(amount * 100));
         const redirectUrl = metadata.redirectUrl ||
           (process.env.NEXT_PUBLIC_APP_URL ? `${process.env.NEXT_PUBLIC_APP_URL}/code` : undefined) ||
-          (process.env.API_URL?.includes('onrender.com') ? 'https://xpos-printing-cloud-customer.vercel.app/code' : undefined) ||
-          `${process.env.API_URL?.replace(':4000', ':3000') || 'http://localhost:3000'}/code`;
+          'https://riseupsolutions.in/print/code';
 
         const payload = {
           merchantOrderId: orderId,

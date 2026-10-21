@@ -49,10 +49,14 @@ export async function POST(req: Request) {
     const amountInPaise = Math.max(100, Math.round(Number(amount) * 100));
     const orderId = `PP_${Date.now()}_${String(jobId).replace(/-/g, '').slice(0, 6).toUpperCase()}`;
 
-    let origin = 'https://xpos-printing-cloud-customer.vercel.app';
-    const originHeader = req.headers.get('origin');
-    if (originHeader) {
-      origin = originHeader;
+    // Use registered PhonePe merchant domain (riseupsolutions.in) for whitelisting compliance
+    let origin = 'https://riseupsolutions.in/print';
+    const originHeader = req.headers.get('origin') || req.headers.get('referer');
+    if (originHeader && (originHeader.includes('riseupsolutions.in') || originHeader.includes('localhost'))) {
+      try {
+        const u = new URL(originHeader);
+        origin = u.origin + (u.pathname.startsWith('/print') ? '/print' : '');
+      } catch {}
     }
 
     const redirectUrl = customRedirect || `${origin}/code?jobId=${jobId}&displayId=${displayId || ''}`;

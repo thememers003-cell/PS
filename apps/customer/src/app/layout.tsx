@@ -19,6 +19,7 @@ export default function RootLayout({
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
         <meta name="theme-color" content="#020617" />
+        <meta name="referrer" content="strict-origin-when-cross-origin" />
       </head>
       <body className="min-h-screen grid-pattern">
         <main className="min-h-screen max-w-lg mx-auto relative">
