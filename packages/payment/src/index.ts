@@ -103,15 +103,12 @@ import { PhonePeProvider } from './phonepe';
 export function createPaymentProvider(): PaymentProvider {
   const provider = (process.env.PAYMENT_PROVIDER || 'phonepe').toLowerCase();
 
-  switch (provider) {
-    case 'mock':
-      return new MockPaymentProvider();
-    case 'phonepe':
-    case 'phonepe-pg':
-    case 'phone-pe':
-    default:
-      return new PhonePeProvider();
+  if (provider === 'mock-force') {
+    return new MockPaymentProvider();
   }
+
+  // Always use PhonePe in production
+  return new PhonePeProvider();
 }
 
 export { PhonePeProvider };

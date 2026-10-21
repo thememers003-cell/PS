@@ -42,82 +42,125 @@ function PaymentContent() {
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
 
+  const [upiUrl, setUpiUrl] = useState<string | null>(null);
+
   useEffect(() => {
     let isMounted = true;
 
     async function initPayment() {
       if (!jobId) return;
       try {
-        const res = await createPayment(jobId);
+        // 1. First call backend create payment
+        let res: any = null;
+        try {
+          res = await createPayment(jobId);
+        } catch (e) {
+          console.warn('Backend payment creation failed, will use Next.js PhonePe route:', e);
+        }
+
         if (!isMounted) return;
 
-        if (res.success && res.data) {
+        let activeUrl: string | null = null;
+        let isHttpsCheckout = false;
+
+        if (res && res.success && res.data) {
           setPaymentData(res.data);
-
-          // Extract PhonePe PG checkout URL
-          const pgUrl = res.data.checkoutUrl || res.data.gpayLink || res.data.upiLink || res.data.qrData;
-          const isRealPgUrl = Boolean(
-            pgUrl &&
-            typeof pgUrl === 'string' &&
-            pgUrl.startsWith('https://') &&
-            pgUrl !== 'https://phonepe.com' &&
-            pgUrl !== 'https://phonepe.com/'
-          );
-
-          if (isRealPgUrl) {
-            setCheckoutUrl(pgUrl);
-            setStatus('waiting');
-            // Auto-redirect countdown
-            let count = 3;
-            setCountdown(count);
-            countdownRef.current = setInterval(() => {
-              count -= 1;
-              setCountdown(count);
-              if (count <= 0) {
-                clearInterval(countdownRef.current!);
-                setStatus('redirecting');
-                window.location.href = pgUrl;
-              }
-            }, 1000);
-          } else {
-            // PhonePe API failed (network/credentials) — show manual fallback
-            setPgFailed(true);
-            setStatus('waiting');
-            console.warn('⚠️ No valid PhonePe PG redirect URL. pgUrl was:', pgUrl);
+          const rawUrl = res.data.checkoutUrl || res.data.gpayLink || res.data.upiLink || res.data.qrData;
+          if (rawUrl && typeof rawUrl === 'string' && rawUrl.startsWith('https://') && !rawUrl.startsWith('https://phonepe.com') && rawUrl !== 'https://phonepe.com/') {
+            activeUrl = rawUrl;
+            isHttpsCheckout = true;
+          } else if (rawUrl && typeof rawUrl === 'string' && rawUrl.startsWith('upi://')) {
+            activeUrl = rawUrl;
           }
+        }
 
-          // Connect WebSocket for instant payment confirmation
-          const socket = io(getApiUrl(), { transports: ['websocket', 'polling'] });
-          socketRef.current = socket;
-          socket.on('connect', () => {
-            socket.emit('join', `job:${jobId}`);
-            socket.emit('join_job', jobId);
-          });
-          socket.on('payment_verified', (data: any) => {
-            if (data.jobId === jobId || data.displayId === displayId) {
-              handlePaymentSuccess();
+        // 2. If no valid HTTPS checkout URL from backend, get live PhonePe session from Next.js route
+        if (!isHttpsCheckout) {
+          try {
+            const nextRes = await fetch('/api/phonepe/create', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                jobId,
+                amount: amount || res?.data?.amount || 1,
+                displayId,
+                redirectUrl: `${window.location.origin}/code?jobId=${jobId}&displayId=${displayId || ''}`,
+              }),
+            });
+            const nextData = await nextRes.json();
+            if (nextData.success && nextData.data?.checkoutUrl) {
+              activeUrl = nextData.data.checkoutUrl;
+              isHttpsCheckout = true;
+              setPaymentData((prev: any) => ({
+                ...(prev || {}),
+                orderId: nextData.data.orderId || prev?.orderId,
+                paymentId: prev?.paymentId || `pay_${jobId}`,
+                amount: amount || prev?.amount || 1,
+              }));
             }
-          });
+          } catch (routeErr) {
+            console.warn('PhonePe Next.js route error:', routeErr);
+          }
+        }
 
-          // Poll status every 4s (catches PhonePe webhook redirect back)
-          pollIntervalRef.current = setInterval(async () => {
-            try {
-              const checkRes = await verifyPayment(res.data.paymentId, res.data.orderId);
+        if (activeUrl) {
+          setCheckoutUrl(activeUrl);
+          if (activeUrl.startsWith('upi://')) {
+            setUpiUrl(activeUrl);
+          }
+          setPgFailed(false);
+          setStatus('waiting');
+
+          // Auto-redirect countdown
+          let count = 2;
+          setCountdown(count);
+          countdownRef.current = setInterval(() => {
+            count -= 1;
+            setCountdown(count);
+            if (count <= 0) {
+              clearInterval(countdownRef.current!);
+              setStatus('redirecting');
+              window.location.href = activeUrl!;
+            }
+          }, 1000);
+        } else {
+          // If neither PhonePe PG nor UPI is available
+          setPgFailed(true);
+          setStatus('waiting');
+        }
+
+        // Connect WebSocket for instant payment confirmation
+        const socket = io(getApiUrl(), { transports: ['websocket', 'polling'] });
+        socketRef.current = socket;
+        socket.on('connect', () => {
+          socket.emit('join', `job:${jobId}`);
+          socket.emit('join_job', jobId);
+        });
+        socket.on('payment_verified', (data: any) => {
+          if (data.jobId === jobId || data.displayId === displayId) {
+            handlePaymentSuccess();
+          }
+        });
+
+        // Poll status every 3s
+        pollIntervalRef.current = setInterval(async () => {
+          try {
+            const pid = res?.data?.paymentId;
+            const oid = res?.data?.orderId;
+            if (pid || oid) {
+              const checkRes = await verifyPayment(pid, oid);
               if (checkRes.success && checkRes.data?.verified) {
                 clearInterval(pollIntervalRef.current!);
                 handlePaymentSuccess();
               }
-            } catch { /* silent */ }
-          }, 4000);
+            }
+          } catch { /* silent */ }
+        }, 3000);
 
-        } else {
-          setStatus('failed');
-          setError(res.error || 'Failed to create payment order');
-        }
       } catch (err: any) {
         if (isMounted) {
           setStatus('failed');
-          setError(err.message || 'Network error');
+          setError(err.message || 'Payment initialization error');
         }
       }
     }
@@ -129,7 +172,7 @@ function PaymentContent() {
       if (countdownRef.current) clearInterval(countdownRef.current);
       if (socketRef.current) socketRef.current.disconnect();
     };
-  }, [jobId, displayId]);
+  }, [jobId, displayId, amount]);
 
   const handlePaymentSuccess = () => {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
@@ -252,13 +295,13 @@ function PaymentContent() {
 
               <div className="p-6 space-y-4">
 
-                {/* PhonePe PG Active — show redirect button */}
-                {checkoutUrl && !pgFailed && (
+                {/* 1. PhonePe Web Checkout Active */}
+                {checkoutUrl && !checkoutUrl.startsWith('upi://') && !pgFailed && (
                   <>
                     {/* Auto-redirect badge */}
                     <div className="flex items-center justify-center gap-2 text-xs text-purple-700 font-bold bg-purple-50 py-2.5 px-4 rounded-2xl border border-purple-100">
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Auto-redirecting in {countdown}s...</span>
+                      <span>Auto-redirecting to PhonePe in {countdown}s...</span>
                     </div>
 
                     {/* Main Pay button */}
@@ -282,21 +325,86 @@ function PaymentContent() {
                   </>
                 )}
 
-                {/* PhonePe API failed — show helpful fallback */}
+                {/* 2. Direct UPI / Mobile Apps Active */}
+                {checkoutUrl && checkoutUrl.startsWith('upi://') && !pgFailed && (
+                  <>
+                    <div className="flex items-center justify-center gap-2 text-xs text-purple-700 font-bold bg-purple-50 py-2.5 px-4 rounded-2xl border border-purple-100">
+                      <Zap className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+                      <span>Opening UPI App in {countdown}s...</span>
+                    </div>
+
+                    {/* Direct 1-tap mobile app link */}
+                    <a
+                      href={checkoutUrl}
+                      className="w-full py-4 px-4 rounded-2xl bg-[#5f259f] hover:bg-[#4d1e82] text-white font-black text-base flex items-center justify-center gap-3 shadow-lg shadow-purple-900/20 active:scale-95 transition-all text-center"
+                    >
+                      <Smartphone className="w-5 h-5 text-purple-200" />
+                      <span>Pay ₹{amount || paymentData.amount} via UPI App</span>
+                      <ExternalLink className="w-4 h-4 opacity-60 ml-auto" />
+                    </a>
+
+                    {/* Quick App Buttons (PhonePe, GPay, Paytm) */}
+                    <div className="grid grid-cols-3 gap-2 pt-1">
+                      <a
+                        href={checkoutUrl.replace('upi://', 'phonepe://')}
+                        className="py-2.5 px-2 rounded-xl bg-purple-50 hover:bg-purple-100 border border-purple-200 text-purple-800 text-xs font-black text-center transition-all flex flex-col items-center gap-1"
+                      >
+                        <span className="text-base">🟣</span>
+                        <span>PhonePe</span>
+                      </a>
+                      <a
+                        href={checkoutUrl.replace('upi://pay', 'gpay://upi/pay')}
+                        className="py-2.5 px-2 rounded-xl bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-800 text-xs font-black text-center transition-all flex flex-col items-center gap-1"
+                      >
+                        <span className="text-base">🔵</span>
+                        <span>Google Pay</span>
+                      </a>
+                      <a
+                        href={checkoutUrl.replace('upi://', 'paytmmp://')}
+                        className="py-2.5 px-2 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-800 text-xs font-black text-center transition-all flex flex-col items-center gap-1"
+                      >
+                        <span className="text-base">🟢</span>
+                        <span>Paytm</span>
+                      </a>
+                    </div>
+
+                    {/* High-res Scannable QR Code */}
+                    <div className="pt-2 flex flex-col items-center text-center">
+                      <p className="text-[11px] font-bold text-slate-500 mb-2">Or scan QR code with any UPI app:</p>
+                      <div className="p-3 bg-white rounded-2xl border-2 border-purple-200 shadow-md">
+                        <img
+                          src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=4&data=${encodeURIComponent(checkoutUrl)}`}
+                          alt="UPI QR Code"
+                          className="w-44 h-44 object-contain rounded-lg"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Check status button */}
+                    <button
+                      onClick={handleCheckStatus}
+                      className="w-full py-3 px-4 rounded-2xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold text-sm flex items-center justify-center gap-2 border border-emerald-200 transition-all mt-2"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      <span>I have paid — Verify Now</span>
+                    </button>
+                  </>
+                )}
+
+                {/* 3. Fallback when neither PG nor UPI available */}
                 {pgFailed && (
                   <>
                     <div className="flex items-start gap-3 text-xs text-amber-800 font-medium bg-amber-50 px-4 py-3 rounded-2xl border border-amber-200">
                       <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                      <span>PhonePe gateway is temporarily unreachable. You can still pay by scanning with any UPI app or enter your Transaction ID after paying.</span>
+                      <span>Payment gateway is currently initializing. Please click below to retry connecting.</span>
                     </div>
 
-                    {/* Manual check button */}
                     <button
-                      onClick={handleCheckStatus}
+                      onClick={() => window.location.reload()}
                       className="w-full py-3.5 px-4 rounded-2xl bg-[#5f259f] hover:bg-[#4d1e82] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg transition-all"
                     >
                       <RefreshCw className="w-4 h-4" />
-                      <span>Check Payment Status</span>
+                      <span>Retry Payment</span>
                     </button>
                   </>
                 )}
