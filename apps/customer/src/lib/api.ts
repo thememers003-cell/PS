@@ -141,9 +141,10 @@ export async function getJob(jobId: string) {
 
 // ── Payments ──
 export async function createPayment(jobId: string) {
+  const redirectUrl = typeof window !== 'undefined' ? `${window.location.origin}/code` : undefined;
   return apiRequest<any>('/api/payments/create', {
     method: 'POST',
-    body: JSON.stringify({ jobId }),
+    body: JSON.stringify({ jobId, redirectUrl }),
   });
 }
 

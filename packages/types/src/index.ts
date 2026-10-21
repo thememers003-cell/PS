@@ -202,6 +202,7 @@ export interface PrinterInfo {
   name: string;
   isDefault: boolean;
   status: PrinterStatus;
+  model?: string;
 }
 
 export interface PrintJobRequest {

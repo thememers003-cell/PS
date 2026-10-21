@@ -12,7 +12,7 @@ router.post('/create', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.locals.prisma;
     const payment = createPaymentProvider();
-    const { jobId } = req.body;
+    const { jobId, redirectUrl: clientRedirectUrl } = req.body;
 
     if (!jobId) {
       return res.status(400).json({ success: false, error: 'Job ID required' });
@@ -39,10 +39,20 @@ router.post('/create', async (req: Request, res: Response) => {
       });
     }
 
+    // Determine the frontend client URL for redirect
+    let origin = req.headers.origin as string | undefined;
+    if (!origin && req.headers.referer) {
+      try {
+        origin = new URL(req.headers.referer).origin;
+      } catch {}
+    }
+    const redirectUrl = clientRedirectUrl || (origin ? `${origin}/code` : undefined);
+
     // Create payment order via provider
     const order = await payment.createOrder(job.totalPrice, 'INR', {
       jobId: job.id,
       displayId: job.displayId,
+      ...(redirectUrl ? { redirectUrl } : {}),
     });
 
     // Store or update payment record idempotently
@@ -72,6 +82,10 @@ router.post('/create', async (req: Request, res: Response) => {
       data: { status: 'PAYMENT_PENDING' },
     });
 
+    const pgCheckoutUrl = (order as any).checkoutUrl ||
+      ((order as any).gpayLink && String((order as any).gpayLink).startsWith('https://') ? (order as any).gpayLink : undefined) ||
+      (order.qrData && order.qrData.startsWith('https://') ? order.qrData : undefined);
+
     res.json({
       success: true,
       data: {
@@ -81,8 +95,8 @@ router.post('/create', async (req: Request, res: Response) => {
         currency: order.currency,
         qrData: order.qrData,
         upiLink: order.upiLink,
-        gpayLink: (order as any).gpayLink || order.upiLink,
-        checkoutUrl: (order as any).gpayLink || order.upiLink,
+        gpayLink: pgCheckoutUrl || order.upiLink,
+        checkoutUrl: pgCheckoutUrl,
         payeeVpa: 'PhonePe PG (M236NFVVSAXD2)',
         provider: 'phonepe',
         expiresAt: order.expiresAt,

@@ -56,11 +56,13 @@ function PaymentContent() {
 
           // Extract PhonePe PG checkout URL
           const pgUrl = res.data.checkoutUrl || res.data.gpayLink || res.data.upiLink || res.data.qrData;
-          const isRealPgUrl = pgUrl &&
+          const isRealPgUrl = Boolean(
+            pgUrl &&
             typeof pgUrl === 'string' &&
             pgUrl.startsWith('https://') &&
-            !pgUrl.startsWith('https://phonepe.com') &&
-            pgUrl !== 'https://phonepe.com';
+            pgUrl !== 'https://phonepe.com' &&
+            pgUrl !== 'https://phonepe.com/'
+          );
 
           if (isRealPgUrl) {
             setCheckoutUrl(pgUrl);

@@ -97,30 +97,21 @@ export class MockPaymentProvider implements PaymentProvider {
   }
 }
 
-import { GooglePayUpiProvider } from './googlepay-upi';
 import { PhonePeProvider } from './phonepe';
 
 // ── Factory ──
 export function createPaymentProvider(): PaymentProvider {
-  const hasPhonePeKeys = Boolean(process.env.PHONEPE_CLIENT_ID || process.env.PHONEPE_MERCHANT_ID);
-  const defaultProvider = hasPhonePeKeys ? 'phonepe' : 'gpay';
-  const provider = (process.env.PAYMENT_PROVIDER || defaultProvider).toLowerCase();
+  const provider = (process.env.PAYMENT_PROVIDER || 'phonepe').toLowerCase();
 
   switch (provider) {
+    case 'mock':
+      return new MockPaymentProvider();
     case 'phonepe':
     case 'phonepe-pg':
     case 'phone-pe':
-      return new PhonePeProvider();
-    case 'gpay':
-    case 'upi':
-    case 'googlepay':
-    case 'gpay-upi':
-      return new GooglePayUpiProvider();
-    case 'mock':
-      return new MockPaymentProvider();
     default:
-      return hasPhonePeKeys ? new PhonePeProvider() : new GooglePayUpiProvider();
+      return new PhonePeProvider();
   }
 }
 
-export { GooglePayUpiProvider, PhonePeProvider };
+export { PhonePeProvider };

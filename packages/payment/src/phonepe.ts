@@ -161,7 +161,10 @@ export class PhonePeProvider implements PaymentProvider {
 
         // PhonePe PG strictly enforces minimum 100 paise (₹1.00 INR)
         const amountInPaise = Math.max(100, Math.round(amount * 100));
-        const redirectUrl = `${process.env.NEXT_PUBLIC_APP_URL || process.env.API_URL?.replace(':4000', ':3000') || 'http://localhost:3000'}/code`;
+        const redirectUrl = metadata.redirectUrl ||
+          (process.env.NEXT_PUBLIC_APP_URL ? `${process.env.NEXT_PUBLIC_APP_URL}/code` : undefined) ||
+          (process.env.API_URL?.includes('onrender.com') ? 'https://xpos-printing-cloud-customer.vercel.app/code' : undefined) ||
+          `${process.env.API_URL?.replace(':4000', ':3000') || 'http://localhost:3000'}/code`;
 
         const payload = {
           merchantOrderId: orderId,
@@ -175,7 +178,7 @@ export class PhonePeProvider implements PaymentProvider {
           },
         };
 
-        console.log(`🚀 [PhonePe V2] Creating checkout order: ${orderId} | ₹${amount} (${amountInPaise} paise)`);
+        console.log(`🚀 [PhonePe V2] Creating checkout order: ${orderId} | ₹${amount} (${amountInPaise} paise) | redirectUrl: ${redirectUrl}`);
 
         const res = await this.fetchWithTimeout(checkoutEndpoint, {
           method: 'POST',
@@ -191,7 +194,7 @@ export class PhonePeProvider implements PaymentProvider {
           let data: any = {};
           try { data = JSON.parse(resText); } catch {}
           if (data.redirectUrl) {
-            pgRedirectUrl = data.redirectUrl;
+            pgRedirectUrl = String(data.redirectUrl);
             console.log(`✅ [PhonePe V2 PG] Live checkout created: ${orderId} -> ${pgRedirectUrl.slice(0, 60)}...`);
             const existing = this.pendingOrders.get(orderId);
             if (existing) {
@@ -215,7 +218,7 @@ export class PhonePeProvider implements PaymentProvider {
       console.warn('⚠️ Skipping PhonePe checkout — could not obtain OAuth token');
     }
 
-    const finalUrl = pgRedirectUrl || 'https://phonepe.com';
+    const finalUrl = pgRedirectUrl || upiLink;
 
     return {
       orderId,
@@ -223,10 +226,11 @@ export class PhonePeProvider implements PaymentProvider {
       currency,
       qrData: finalUrl,
       upiLink: finalUrl,
-      gpayLink: finalUrl,
+      gpayLink: pgRedirectUrl || upiLink,
+      checkoutUrl: pgRedirectUrl,
       payeeVpa: `PhonePe Merchant ID: ${this.config.merchantId}`,
       expiresAt: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
-    };
+    } as any;
   }
 
   /**
