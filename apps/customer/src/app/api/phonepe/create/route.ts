@@ -59,7 +59,9 @@ export async function POST(req: Request) {
       } catch {}
     }
 
-    const redirectUrl = customRedirect || `${origin}/code?jobId=${jobId}&displayId=${displayId || ''}`;
+    const redirectUrl = customRedirect
+      ? (customRedirect.includes('orderId=') ? customRedirect : `${customRedirect}&orderId=${orderId}`)
+      : `${origin}/code?jobId=${jobId}&displayId=${displayId || ''}&orderId=${orderId}`;
 
     const payload = {
       merchantOrderId: orderId,

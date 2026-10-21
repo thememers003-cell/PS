@@ -34,6 +34,7 @@ function CodeContent() {
   const searchParams = useSearchParams();
   const jobId = searchParams.get('jobId');
   const displayId = searchParams.get('displayId');
+  const orderIdParam = searchParams.get('orderId');
   const pairKioskParam = searchParams.get('pairKiosk') || searchParams.get('kiosk');
   const pairTokenParam = searchParams.get('pairToken') || searchParams.get('token');
 
@@ -350,6 +351,13 @@ function CodeContent() {
         }
 
         setResolvedJobId(activeJobId);
+
+        // If orderId is provided from PhonePe redirect, verify it directly with the server
+        if (orderIdParam) {
+          try {
+            await verifyPayment('', orderIdParam);
+          } catch {}
+        }
 
         let res = await generatePrintCode(activeJobId);
 
