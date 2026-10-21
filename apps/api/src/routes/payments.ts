@@ -108,6 +108,46 @@ router.post('/create', async (req: Request, res: Response) => {
   }
 });
 
+// Sync order from Next.js PhonePe session
+router.post('/sync-order', async (req: Request, res: Response) => {
+  try {
+    const prisma = req.app.locals.prisma;
+    const { jobId, orderId, provider, amount } = req.body;
+    if (!jobId || !orderId) {
+      return res.status(400).json({ success: false, error: 'jobId and orderId required' });
+    }
+
+    const job = await prisma.printJob.findFirst({
+      where: { OR: [{ id: jobId }, { displayId: jobId }] },
+    });
+    if (!job) {
+      return res.status(404).json({ success: false, error: 'Job not found' });
+    }
+
+    await prisma.payment.upsert({
+      where: { jobId: job.id },
+      update: {
+        provider: provider || 'phonepe',
+        providerOrderId: orderId,
+        status: 'PAYMENT_PENDING',
+      },
+      create: {
+        jobId: job.id,
+        amount: Number(amount || job.totalPrice || 1),
+        currency: 'INR',
+        provider: provider || 'phonepe',
+        providerOrderId: orderId,
+        status: 'PAYMENT_PENDING',
+      },
+    });
+
+    res.json({ success: true, message: 'Order synced successfully' });
+  } catch (err: any) {
+    console.error('Failed to sync payment order:', err);
+    res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
 // Verify payment
 router.post('/verify', async (req: Request, res: Response) => {
   try {
@@ -137,9 +177,14 @@ router.post('/verify', async (req: Request, res: Response) => {
       });
     }
 
-    // Verify with payment provider — NEVER TRUST FRONTEND
+    // Determine the active order ID (use real PhonePe order ID if provided)
+    const activeOrderId = (orderId && typeof orderId === 'string' && !orderId.startsWith('mock_'))
+      ? orderId
+      : paymentRecord.providerOrderId;
+
+    // Verify with payment provider
     const verification = await paymentProvider.verifyPayment(
-      paymentRecord.providerOrderId,
+      activeOrderId,
       paymentData || {}
     );
 
@@ -148,6 +193,8 @@ router.post('/verify', async (req: Request, res: Response) => {
       where: { id: paymentRecord.id },
       data: {
         status: verification.status,
+        providerOrderId: verification.verified ? activeOrderId : paymentRecord.providerOrderId,
+        provider: verification.verified ? 'phonepe' : paymentRecord.provider,
         providerRef: verification.providerRef,
         verifiedAt: verification.verified ? new Date() : null,
       },
