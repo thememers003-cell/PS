@@ -4,6 +4,7 @@
 
 import { Router, Request, Response } from 'express';
 import * as crypto from 'crypto';
+import { createPaymentProvider } from '@xpos/payment';
 
 const router = Router();
 
@@ -53,7 +54,36 @@ router.post('/generate', async (req: Request, res: Response) => {
 
     // Verify payment is successful
     if (!job.payment || job.payment.status !== 'PAID') {
-      return res.status(400).json({ success: false, error: 'Payment not verified' });
+      // Auto-reconcile with PhonePe in real time
+      if (job.payment && job.payment.providerOrderId) {
+        try {
+          const paymentProvider = createPaymentProvider();
+          const verification = await paymentProvider.verifyPayment(job.payment.providerOrderId);
+          if (verification.verified) {
+            await prisma.payment.update({
+              where: { id: job.payment.id },
+              data: {
+                status: 'PAID',
+                provider: 'phonepe',
+                providerRef: verification.providerRef,
+                verifiedAt: new Date(),
+              },
+            });
+            await prisma.printJob.update({
+              where: { id: job.id },
+              data: { status: 'PAID' },
+            });
+            job.status = 'PAID';
+            (job.payment as any).status = 'PAID';
+          }
+        } catch (autoErr) {
+          console.warn('Auto-verification error in print code generation:', autoErr);
+        }
+      }
+
+      if (!job.payment || job.payment.status !== 'PAID') {
+        return res.status(400).json({ success: false, error: 'Payment not verified' });
+      }
     }
 
     // Check if job is already completed

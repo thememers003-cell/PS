@@ -351,7 +351,17 @@ function CodeContent() {
 
         setResolvedJobId(activeJobId);
 
-        const res = await generatePrintCode(activeJobId);
+        let res = await generatePrintCode(activeJobId);
+
+        // If payment was just completed on PhonePe, retry up to 4 times for instant confirmation
+        if (!res.success && (res.error?.includes('Payment not verified') || res.error?.includes('not verified'))) {
+          for (let attempt = 1; attempt <= 4; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            res = await generatePrintCode(activeJobId);
+            if (res.success && res.data) break;
+          }
+        }
+
         if (res.success && res.data) {
           const verifiedCode = res.data.code;
           const verifiedExpires = new Date(res.data.expiresAt);
