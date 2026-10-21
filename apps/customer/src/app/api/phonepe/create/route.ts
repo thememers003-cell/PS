@@ -50,12 +50,12 @@ export async function POST(req: Request) {
     const orderId = `PP_${Date.now()}_${String(jobId).replace(/-/g, '').slice(0, 6).toUpperCase()}`;
 
     // Use registered PhonePe merchant domain (riseupsolutions.in) for whitelisting compliance
-    let origin = 'https://riseupsolutions.in/print';
+    let origin = 'https://riseupsolutions.in';
     const originHeader = req.headers.get('origin') || req.headers.get('referer');
     if (originHeader && (originHeader.includes('riseupsolutions.in') || originHeader.includes('localhost'))) {
       try {
         const u = new URL(originHeader);
-        origin = u.origin + (u.pathname.startsWith('/print') ? '/print' : '');
+        origin = u.origin;
       } catch {}
     }
 
