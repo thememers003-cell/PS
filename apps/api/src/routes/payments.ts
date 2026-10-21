@@ -152,25 +152,80 @@ router.post('/sync-order', async (req: Request, res: Response) => {
 router.post('/verify', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.locals.prisma;
-    const paymentProvider = createPaymentProvider();
+    const paymentProvider = req.app.locals.payment || createPaymentProvider();
     const io = req.app.locals.io;
-    const { paymentId, orderId } = req.body;
+    const { paymentId, orderId, jobId } = req.body;
     const paymentData = req.body.paymentData || (req.body.utr ? { utr: req.body.utr } : {});
     if (req.body.utr && !paymentData.utr) {
       paymentData.utr = req.body.utr;
     }
 
-    // Find payment record
-    const paymentRecord = await prisma.payment.findFirst({
-      where: paymentId ? { id: paymentId } : { providerOrderId: orderId },
+    // Find payment record flexibly by ID, orderId, or jobId
+    const searchConditions: any[] = [];
+    if (paymentId && typeof paymentId === 'string' && !paymentId.startsWith('pay_')) {
+      searchConditions.push({ id: paymentId });
+    }
+    if (orderId && typeof orderId === 'string') {
+      searchConditions.push({ providerOrderId: orderId });
+    }
+    if (jobId && typeof jobId === 'string') {
+      searchConditions.push({ jobId: jobId });
+      searchConditions.push({ job: { displayId: jobId } });
+    }
+    if (req.body.displayId && typeof req.body.displayId === 'string') {
+      searchConditions.push({ job: { displayId: req.body.displayId } });
+    }
+
+    let paymentRecord = await prisma.payment.findFirst({
+      where: searchConditions.length > 0 ? { OR: searchConditions } : { id: paymentId || 'invalid' },
       include: { job: true },
     });
+
+    // If paymentRecord still not found, but job exists, find or create the payment record for this job
+    if (!paymentRecord && jobId) {
+      const job = await prisma.printJob.findFirst({
+        where: { OR: [{ id: jobId }, { displayId: jobId }] },
+        include: { payment: true },
+      });
+      if (job) {
+        if (job.payment) {
+          paymentRecord = { ...job.payment, job };
+        } else {
+          paymentRecord = await prisma.payment.create({
+            data: {
+              jobId: job.id,
+              amount: job.totalPrice,
+              currency: 'INR',
+              provider: 'phonepe',
+              providerOrderId: orderId || `PP_${Date.now()}`,
+              status: 'PAYMENT_PENDING',
+            },
+            include: { job: true },
+          });
+        }
+      }
+    }
 
     if (!paymentRecord) {
       return res.status(404).json({ success: false, error: 'Payment not found' });
     }
 
     if (paymentRecord.status === 'PAID') {
+      // Ensure admin & customer are informed
+      if (io) {
+        const adminPayload = {
+          id: paymentRecord.jobId,
+          displayId: paymentRecord.job.displayId,
+          status: 'PAID',
+          paymentStatus: 'PAID',
+          totalPrice: paymentRecord.amount,
+          providerRef: paymentRecord.providerRef,
+        };
+        io.to('admin').emit('job_updated', adminPayload);
+        io.to('admin').emit('job_update', adminPayload);
+        io.emit('job_updated', adminPayload);
+        io.emit('job_update', adminPayload);
+      }
       return res.json({
         success: true,
         data: { verified: true, status: 'PAID', message: 'Already verified' },
@@ -207,32 +262,35 @@ router.post('/verify', async (req: Request, res: Response) => {
         data: { status: 'PAID' },
       });
 
-      // Notify customer via WebSocket
-      io.to(`session:${paymentRecord.job.sessionId}`).emit('payment_verified', {
+      const customerPayload = {
         type: 'PAYMENT_VERIFIED',
         jobId: paymentRecord.jobId,
         displayId: paymentRecord.job.displayId,
         status: 'PAID',
         amount: paymentRecord.amount,
-      });
+        providerRef: verification.providerRef,
+      };
+
+      // Notify customer via WebSocket
+      io.to(`session:${paymentRecord.job.sessionId}`).emit('payment_verified', customerPayload);
+      io.to(`job:${paymentRecord.jobId}`).emit('payment_verified', customerPayload);
 
       // Broadcast globally for responsive frontends
-      io.emit('payment_verified', {
-        type: 'PAYMENT_VERIFIED',
-        jobId: paymentRecord.jobId,
-        displayId: paymentRecord.job.displayId,
-        status: 'PAID',
-        amount: paymentRecord.amount,
-      });
+      io.emit('payment_verified', customerPayload);
 
-      // Notify Real-Time Admin Portal
-      io.to('admin').emit('job_updated', {
+      // Notify Real-Time Admin Portal (room and broadcast)
+      const adminPayload = {
         id: paymentRecord.jobId,
         displayId: paymentRecord.job.displayId,
         status: 'PAID',
         paymentStatus: 'PAID',
         totalPrice: paymentRecord.amount,
-      });
+        providerRef: verification.providerRef,
+      };
+      io.to('admin').emit('job_updated', adminPayload);
+      io.to('admin').emit('job_update', adminPayload);
+      io.emit('job_updated', adminPayload);
+      io.emit('job_update', adminPayload);
 
       // For QR flow: auto-queue the job
       if (paymentRecord.job.printMethod === 'QR' && paymentRecord.job.kioskId) {
@@ -380,14 +438,18 @@ const handleIncomingWebhook = async (req: Request, res: Response) => {
       });
 
       // Notify Real-Time Admin Portal
-      io.to('admin').emit('job_updated', {
+      const adminUpdate = {
         id: paymentRecord.jobId,
         displayId: paymentRecord.job.displayId,
         status: 'PAID',
         paymentStatus: 'PAID',
         totalPrice: paymentRecord.amount,
         providerRef,
-      });
+      };
+      io.to('admin').emit('job_updated', adminUpdate);
+      io.to('admin').emit('job_update', adminUpdate);
+      io.emit('job_updated', adminUpdate);
+      io.emit('job_update', adminUpdate);
 
       // If kiosk flow, auto-queue job to printer
       if (paymentRecord.job.printMethod === 'QR' && paymentRecord.job.kioskId) {

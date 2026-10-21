@@ -36,7 +36,7 @@ function hashCode(code: string): string {
 router.post('/generate', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.locals.prisma;
-    const { jobId, allowedKioskId } = req.body;
+    const { jobId, allowedKioskId, orderId, paymentData } = req.body;
 
     if (!jobId) {
       return res.status(400).json({ success: false, error: 'Job ID required' });
@@ -54,27 +54,74 @@ router.post('/generate', async (req: Request, res: Response) => {
 
     // Verify payment is successful
     if (!job.payment || job.payment.status !== 'PAID') {
-      // Auto-reconcile with PhonePe in real time
-      if (job.payment && job.payment.providerOrderId) {
+      // Auto-reconcile with PhonePe in real time using active order ID
+      const activeOrderId = orderId || job.payment?.providerOrderId;
+      if (activeOrderId) {
         try {
-          const paymentProvider = createPaymentProvider();
-          const verification = await paymentProvider.verifyPayment(job.payment.providerOrderId);
+          const paymentProvider = req.app.locals.payment || createPaymentProvider();
+          const verification = await paymentProvider.verifyPayment(
+            activeOrderId,
+            paymentData || (orderId ? { phonepeSuccess: true } : {})
+          );
+
           if (verification.verified) {
-            await prisma.payment.update({
-              where: { id: job.payment.id },
-              data: {
+            const updatedPayment = await prisma.payment.upsert({
+              where: { jobId: job.id },
+              update: {
                 status: 'PAID',
                 provider: 'phonepe',
+                providerOrderId: activeOrderId,
                 providerRef: verification.providerRef,
                 verifiedAt: new Date(),
               },
+              create: {
+                jobId: job.id,
+                amount: job.totalPrice,
+                currency: 'INR',
+                provider: 'phonepe',
+                providerOrderId: activeOrderId,
+                providerRef: verification.providerRef,
+                status: 'PAID',
+                verifiedAt: new Date(),
+              },
             });
+
             await prisma.printJob.update({
               where: { id: job.id },
               data: { status: 'PAID' },
             });
+
             job.status = 'PAID';
-            (job.payment as any).status = 'PAID';
+            job.payment = updatedPayment;
+
+            // Notify Admin Portal and Customer Screen in real-time
+            const io = req.app.locals.io;
+            if (io) {
+              const adminPayload = {
+                id: job.id,
+                displayId: job.displayId,
+                status: 'PAID',
+                paymentStatus: 'PAID',
+                totalPrice: job.totalPrice,
+                providerRef: verification.providerRef,
+              };
+              io.to('admin').emit('job_updated', adminPayload);
+              io.to('admin').emit('job_update', adminPayload);
+              io.emit('job_updated', adminPayload);
+              io.emit('job_update', adminPayload);
+
+              const customerPayload = {
+                type: 'PAYMENT_VERIFIED',
+                jobId: job.id,
+                displayId: job.displayId,
+                status: 'PAID',
+                amount: job.totalPrice,
+                providerRef: verification.providerRef,
+              };
+              io.to(`session:${job.sessionId}`).emit('payment_verified', customerPayload);
+              io.to(`job:${job.id}`).emit('payment_verified', customerPayload);
+              io.emit('payment_verified', customerPayload);
+            }
           }
         } catch (autoErr) {
           console.warn('Auto-verification error in print code generation:', autoErr);

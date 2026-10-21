@@ -34,7 +34,8 @@ function CodeContent() {
   const searchParams = useSearchParams();
   const jobId = searchParams.get('jobId');
   const displayId = searchParams.get('displayId');
-  const orderIdParam = searchParams.get('orderId');
+  const orderIdParam = searchParams.get('orderId') || searchParams.get('merchantOrderId') || searchParams.get('transactionId');
+  const phonepeStatus = searchParams.get('code') || searchParams.get('status') || searchParams.get('state');
   const pairKioskParam = searchParams.get('pairKiosk') || searchParams.get('kiosk');
   const pairTokenParam = searchParams.get('pairToken') || searchParams.get('token');
 
@@ -54,13 +55,12 @@ function CodeContent() {
     try {
       const activeJobId = resolvedJobId || jobId;
       if (activeJobId) {
-        const payRes = await createPayment(activeJobId);
-        const pId = payRes.data?.paymentId;
-        const oId = payRes.data?.orderId || orderIdParam || `PP_${Date.now()}`;
-        if (pId) {
-          await verifyPayment(pId, oId, { utr: orderIdParam || 'PHONEPE_COMPLETED' });
-        }
-        const codeRes = await generatePrintCode(activeJobId);
+        await verifyPayment('', orderIdParam || '', {
+          jobId: activeJobId,
+          orderId: orderIdParam,
+          phonepeSuccess: Boolean(orderIdParam),
+        });
+        const codeRes = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
         if (codeRes.success && codeRes.data?.code) {
           setCode(codeRes.data.code);
           setExpiresAt(new Date(codeRes.data.expiresAt));
@@ -378,23 +378,21 @@ function CodeContent() {
 
         setResolvedJobId(activeJobId);
 
-        // 1. Try generating print code directly
-        let res = await generatePrintCode(activeJobId);
+        // 1. Try generating print code directly (with orderIdParam for auto-reconciliation)
+        let res = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
 
-        // 2. If payment is not verified yet, auto-reconcile with backend
+        // 2. If payment is not verified yet, auto-verify with backend directly without creating duplicate orders
         if (!res.success && (res.error?.includes('Payment not verified') || res.error?.includes('not verified') || res.error?.includes('pending'))) {
           try {
-            const payRes = await createPayment(activeJobId);
-            const pId = payRes.data?.paymentId;
-            const oId = payRes.data?.orderId || orderIdParam || `PP_${Date.now()}`;
-
-            if (pId) {
-              await verifyPayment(pId, oId, { utr: orderIdParam || 'PHONEPE_COMPLETED' });
-            }
+            await verifyPayment('', orderIdParam || '', {
+              jobId: activeJobId,
+              orderId: orderIdParam,
+              phonepeSuccess: phonepeStatus === 'PAYMENT_SUCCESS' || phonepeStatus === 'SUCCESS' || phonepeStatus === 'COMPLETED' || Boolean(orderIdParam),
+            });
 
             for (let attempt = 1; attempt <= 4; attempt++) {
-              await new Promise((resolve) => setTimeout(resolve, 1000));
-              res = await generatePrintCode(activeJobId);
+              await new Promise((resolve) => setTimeout(resolve, 800));
+              res = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
               if (res.success && res.data) break;
             }
           } catch (reconcileErr) {

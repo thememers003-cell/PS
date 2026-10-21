@@ -86,21 +86,32 @@ export async function POST(req: Request) {
 
     const checkoutData = await checkoutRes.json();
     if (checkoutRes.ok && checkoutData.redirectUrl) {
-      // Sync orderId with Render database so verification knows about this PhonePe session
+      // Sync orderId with database so verification knows about this PhonePe session
       try {
-        const renderApi = process.env.NEXT_PUBLIC_API_URL || 'https://xpos-printing-cloud.onrender.com';
-        await fetch(`${renderApi}/api/payments/sync-order`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jobId,
-            orderId,
-            provider: 'phonepe',
-            amount: Number(amount),
-          }),
-        });
+        const candidateApis = Array.from(new Set([
+          process.env.API_URL,
+          process.env.NEXT_PUBLIC_API_URL,
+          'http://localhost:4000',
+          'https://xpos-printing-cloud.onrender.com',
+        ])).filter(Boolean) as string[];
+
+        for (const renderApi of candidateApis) {
+          try {
+            const syncRes = await fetch(`${renderApi}/api/payments/sync-order`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                jobId,
+                orderId,
+                provider: 'phonepe',
+                amount: Number(amount),
+              }),
+            });
+            if (syncRes.ok) break;
+          } catch {}
+        }
       } catch (e) {
-        console.warn('Could not sync order to Render API:', e);
+        console.warn('Could not sync order to API:', e);
       }
 
       return NextResponse.json({

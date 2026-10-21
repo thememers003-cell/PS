@@ -151,17 +151,18 @@ export async function createPayment(jobId: string) {
 }
 
 export async function verifyPayment(paymentId: string, orderId: string, paymentData: any = {}) {
+  const jobId = paymentData?.jobId;
   return apiRequest<any>('/api/payments/verify', {
     method: 'POST',
-    body: JSON.stringify({ paymentId, orderId, paymentData }),
+    body: JSON.stringify({ paymentId, orderId, jobId, paymentData }),
   });
 }
 
 // ── Print Codes ──
-export async function generatePrintCode(jobId: string, allowedKioskId?: string) {
+export async function generatePrintCode(jobId: string, allowedKioskId?: string, orderId?: string) {
   return apiRequest<any>('/api/print-codes/generate', {
     method: 'POST',
-    body: JSON.stringify({ jobId, allowedKioskId }),
+    body: JSON.stringify({ jobId, allowedKioskId, orderId }),
   });
 }
 

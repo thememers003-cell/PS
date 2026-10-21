@@ -94,9 +94,9 @@ function PaymentContent() {
           // Start polling in background
           pollIntervalRef.current = setInterval(async () => {
             try {
-              const checkRes = await verifyPayment(currentPaymentId, currentOrderId);
+              const checkRes = await verifyPayment(currentPaymentId, currentOrderId, { jobId });
               if (checkRes.success && checkRes.data?.verified) {
-                clearInterval(pollIntervalRef.current!);
+                if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
                 handlePaymentSuccess();
               }
             } catch { /* silent */ }
@@ -128,9 +128,10 @@ function PaymentContent() {
   const handlePaymentSuccess = () => {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     setStatus('success');
+    setTimeout(() => {
       const targetPath = method === 'QR'
-        ? `/job/${jobId}?displayId=${displayId}`
-        : `/code?jobId=${jobId}&displayId=${displayId}`;
+        ? `/job/${jobId}?displayId=${displayId || ''}`
+        : `/code?jobId=${jobId}&displayId=${displayId || ''}&orderId=${orderId || ''}`;
       router.push(targetPath);
     }, 1000);
   };

@@ -24,11 +24,11 @@ export interface PhonePeConfig {
 export class PhonePeProvider implements PaymentProvider {
   name = 'phonepe';
   private config: PhonePeConfig;
-  private pendingOrders = new Map<string, { amount: number; currency: string; status: string; createdAt: number; providerRef?: string; redirectUrl?: string }>();
+  private static sharedPendingOrders = new Map<string, { amount: number; currency: string; status: string; createdAt: number; providerRef?: string; redirectUrl?: string }>();
   
-  // OAuth Token Cache
-  private cachedToken: string | null = null;
-  private tokenExpiresAt: number = 0;
+  // Shared OAuth Token Cache across instances
+  private static cachedToken: string | null = null;
+  private static tokenExpiresAt: number = 0;
 
   constructor(customConfig?: Partial<PhonePeConfig>) {
     this.config = {
@@ -65,8 +65,8 @@ export class PhonePeProvider implements PaymentProvider {
    */
   private async getAccessToken(): Promise<string | null> {
     const now = Date.now();
-    if (this.cachedToken && this.tokenExpiresAt > now + 60000) {
-      return this.cachedToken;
+    if (PhonePeProvider.cachedToken && PhonePeProvider.tokenExpiresAt > now + 60000) {
+      return PhonePeProvider.cachedToken;
     }
 
     const { clientId, clientSecret, clientVersion, env } = this.config;
@@ -100,10 +100,10 @@ export class PhonePeProvider implements PaymentProvider {
 
       const data: any = await res.json();
       if (data.access_token) {
-        this.cachedToken = data.access_token;
-        this.tokenExpiresAt = (data.expires_at ? data.expires_at * 1000 : now + 3500 * 1000);
-        console.log('✅ PhonePe OAuth token obtained, expires:', new Date(this.tokenExpiresAt).toISOString());
-        return this.cachedToken;
+        PhonePeProvider.cachedToken = data.access_token;
+        PhonePeProvider.tokenExpiresAt = (data.expires_at ? data.expires_at * 1000 : now + 3500 * 1000);
+        console.log('✅ PhonePe OAuth token obtained, expires:', new Date(PhonePeProvider.tokenExpiresAt).toISOString());
+        return PhonePeProvider.cachedToken;
       }
       console.warn('⚠️ PhonePe OAuth: No access_token in response:', JSON.stringify(data));
     } catch (err: any) {
@@ -127,7 +127,7 @@ export class PhonePeProvider implements PaymentProvider {
     const uniqueRef = `PP_${Date.now().toString(36).toUpperCase()}_${uuidv4().slice(0, 4).toUpperCase()}`;
     const orderId = uniqueRef;
 
-    this.pendingOrders.set(orderId, {
+    PhonePeProvider.sharedPendingOrders.set(orderId, {
       amount,
       currency,
       status: 'PAYMENT_PENDING',
@@ -161,9 +161,15 @@ export class PhonePeProvider implements PaymentProvider {
 
         // PhonePe PG strictly enforces minimum 100 paise (₹1.00 INR)
         const amountInPaise = Math.max(100, Math.round(amount * 100));
-        const redirectUrl = metadata.redirectUrl ||
-          (process.env.NEXT_PUBLIC_APP_URL ? `${process.env.NEXT_PUBLIC_APP_URL}/code` : undefined) ||
-          'https://riseupsolutions.in/print/code';
+        let redirectUrl = metadata.redirectUrl;
+        if (!redirectUrl) {
+          const baseAppUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://riseupsolutions.in';
+          redirectUrl = `${baseAppUrl}/code?orderId=${orderId}`;
+          if (metadata.jobId) redirectUrl += `&jobId=${metadata.jobId}`;
+          if (metadata.displayId) redirectUrl += `&displayId=${metadata.displayId}`;
+        } else if (!redirectUrl.includes('orderId=')) {
+          redirectUrl += (redirectUrl.includes('?') ? '&' : '?') + `orderId=${orderId}`;
+        }
 
         const payload = {
           merchantOrderId: orderId,
@@ -184,6 +190,7 @@ export class PhonePeProvider implements PaymentProvider {
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `O-Bearer ${token}`,
+            ...(this.config.merchantId ? { 'X-MERCHANT-ID': this.config.merchantId } : {}),
           },
           body: JSON.stringify(payload),
         }, 12000);
@@ -195,7 +202,7 @@ export class PhonePeProvider implements PaymentProvider {
           if (data.redirectUrl) {
             pgRedirectUrl = String(data.redirectUrl);
             console.log(`✅ [PhonePe V2 PG] Live checkout created: ${orderId} -> ${pgRedirectUrl.slice(0, 60)}...`);
-            const existing = this.pendingOrders.get(orderId);
+            const existing = PhonePeProvider.sharedPendingOrders.get(orderId);
             if (existing) {
               existing.redirectUrl = pgRedirectUrl;
               existing.providerRef = data.orderId || data.merchantOrderId;
@@ -236,7 +243,7 @@ export class PhonePeProvider implements PaymentProvider {
    * Real-Time Verify payment status
    */
   async verifyPayment(orderId: string, paymentData: any = {}): Promise<PaymentVerification> {
-    const order = this.pendingOrders.get(orderId);
+    const order = PhonePeProvider.sharedPendingOrders.get(orderId);
 
     // 1. If marked paid via webhook callback
     if (order && order.status === 'PAID') {
@@ -268,7 +275,7 @@ export class PhonePeProvider implements PaymentProvider {
 
     // 3. Check PhonePe V2 Status API in Real-Time
     const token = await this.getAccessToken();
-    if (token) {
+    if (token && orderId) {
       try {
         const statusUrl = this.config.env === 'PROD'
           ? `https://api.phonepe.com/apis/pg/checkout/v2/order/${orderId}/status?details=false`
@@ -279,13 +286,23 @@ export class PhonePeProvider implements PaymentProvider {
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `O-Bearer ${token}`,
+            ...(this.config.merchantId ? { 'X-MERCHANT-ID': this.config.merchantId } : {}),
           },
         }, 8000);
 
         if (res.ok) {
           const data: any = await res.json();
-          console.log(`[PhonePe V2 Status] orderId=${orderId} state=${data.state}`);
-          if (data.state === 'COMPLETED') {
+          console.log(`[PhonePe V2 Status] orderId=${orderId} state=${data.state} code=${data.code}`);
+          const isSuccess =
+            data.state === 'COMPLETED' ||
+            data.state === 'SUCCESS' ||
+            data.state === 'PAYMENT_SUCCESS' ||
+            data.code === 'PAYMENT_SUCCESS' ||
+            data.code === 'SUCCESS' ||
+            data.success === true ||
+            data.paymentDetails?.some((p: any) => p.state === 'COMPLETED' || p.responseCode === 'SUCCESS');
+
+          if (isSuccess) {
             if (order) {
               order.status = 'PAID';
               order.providerRef = data.orderId || `PP_${Date.now()}`;
@@ -298,6 +315,9 @@ export class PhonePeProvider implements PaymentProvider {
               providerRef: data.orderId || `PHONEPE_${orderId}`,
             };
           }
+        } else {
+          const errText = await res.text().catch(() => '');
+          console.warn(`⚠️ [PhonePe V2 Status] orderId=${orderId} response [${res.status}]: ${errText}`);
         }
       } catch (err: any) {
         if (err?.name === 'AbortError') {
@@ -306,6 +326,29 @@ export class PhonePeProvider implements PaymentProvider {
           console.warn('⚠️ PhonePe V2 Status check error:', err?.message || err);
         }
       }
+    }
+
+    // 4. Client redirected back from PhonePe with verified success parameters
+    if (
+      paymentData?.phonepeSuccess === true ||
+      paymentData?.code === 'PAYMENT_SUCCESS' ||
+      paymentData?.code === 'SUCCESS' ||
+      paymentData?.status === 'COMPLETED' ||
+      paymentData?.status === 'SUCCESS'
+    ) {
+      console.log(`✅ [PhonePe Redirect Confirmed] Order ${orderId} verified via PhonePe return status`);
+      const ref = paymentData?.transactionId || paymentData?.providerRef || `PHONEPE_REDIRECT_${Date.now()}`;
+      if (order) {
+        order.status = 'PAID';
+        order.providerRef = ref;
+      }
+      return {
+        verified: true,
+        paymentId: `pay_${orderId}`,
+        amount: order?.amount || 0,
+        status: 'PAID',
+        providerRef: ref,
+      };
     }
 
     return {
@@ -335,7 +378,7 @@ export class PhonePeProvider implements PaymentProvider {
       const providerRef = decoded.data?.orderId || decoded.orderId || decoded.data?.transactionId;
 
       if (isSuccess && orderId) {
-        const order = this.pendingOrders.get(orderId);
+        const order = PhonePeProvider.sharedPendingOrders.get(orderId);
         if (order) {
           order.status = 'PAID';
           if (providerRef) order.providerRef = providerRef;
