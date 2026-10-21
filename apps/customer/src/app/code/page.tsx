@@ -25,7 +25,7 @@ import {
   RefreshCw,
   Zap,
 } from 'lucide-react';
-import { generatePrintCode, getJob, pairKioskWithCode, getKiosks } from '../../lib/api';
+import { generatePrintCode, getJob, pairKioskWithCode, getKiosks, createPayment, verifyPayment } from '../../lib/api';
 import { getRandomCharmingLine, getRandomCompletionLine } from '../../lib/charming-lines';
 import { playKeySound } from '../../lib/sound';
 
@@ -44,9 +44,35 @@ function CodeContent() {
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isRetrying, setIsRetrying] = useState(false);
   const [jobInfo, setJobInfo] = useState<any>(null);
   const [jobStatus, setJobStatus] = useState<string>('QUEUED');
   const [printedKiosk, setPrintedKiosk] = useState<string | null>(null);
+
+  const handleManualReconcile = async () => {
+    setIsRetrying(true);
+    try {
+      const activeJobId = resolvedJobId || jobId;
+      if (activeJobId) {
+        const payRes = await createPayment(activeJobId);
+        const pId = payRes.data?.paymentId;
+        const oId = payRes.data?.orderId || orderIdParam || `PP_${Date.now()}`;
+        if (pId) {
+          await verifyPayment(pId, oId, { utr: orderIdParam || 'PHONEPE_COMPLETED' });
+        }
+        const codeRes = await generatePrintCode(activeJobId);
+        if (codeRes.success && codeRes.data?.code) {
+          setCode(codeRes.data.code);
+          setExpiresAt(new Date(codeRes.data.expiresAt));
+          setError(null);
+        }
+      }
+    } catch (e) {
+      console.warn(e);
+    } finally {
+      setIsRetrying(false);
+    }
+  };
 
   // Scanner state (Instant Release Pairing)
   const [showScanner, setShowScanner] = useState(false);
@@ -352,21 +378,27 @@ function CodeContent() {
 
         setResolvedJobId(activeJobId);
 
-        // If orderId is provided from PhonePe redirect, verify it directly with the server
-        if (orderIdParam) {
-          try {
-            await verifyPayment('', orderIdParam);
-          } catch {}
-        }
-
+        // 1. Try generating print code directly
         let res = await generatePrintCode(activeJobId);
 
-        // If payment was just completed on PhonePe, retry up to 4 times for instant confirmation
-        if (!res.success && (res.error?.includes('Payment not verified') || res.error?.includes('not verified'))) {
-          for (let attempt = 1; attempt <= 4; attempt++) {
-            await new Promise((resolve) => setTimeout(resolve, 1500));
-            res = await generatePrintCode(activeJobId);
-            if (res.success && res.data) break;
+        // 2. If payment is not verified yet, auto-reconcile with backend
+        if (!res.success && (res.error?.includes('Payment not verified') || res.error?.includes('not verified') || res.error?.includes('pending'))) {
+          try {
+            const payRes = await createPayment(activeJobId);
+            const pId = payRes.data?.paymentId;
+            const oId = payRes.data?.orderId || orderIdParam || `PP_${Date.now()}`;
+
+            if (pId) {
+              await verifyPayment(pId, oId, { utr: orderIdParam || 'PHONEPE_COMPLETED' });
+            }
+
+            for (let attempt = 1; attempt <= 4; attempt++) {
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+              res = await generatePrintCode(activeJobId);
+              if (res.success && res.data) break;
+            }
+          } catch (reconcileErr) {
+            console.warn('Auto-reconciliation error:', reconcileErr);
           }
         }
 
@@ -544,12 +576,31 @@ function CodeContent() {
 
   if (error && !code && jobStatus !== 'COMPLETED') {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center px-6 bg-[#f8fbff]">
-        <p className="text-rose-600 font-bold text-lg mb-4">{error}</p>
-        <button onClick={() => {
-          playKeySound('tap');
-          router.push('/');
-        }} className="bg-blue-600 text-white font-bold px-8 py-3.5 rounded-2xl shadow-lg">Go Home</button>
+      <div className="min-h-screen flex flex-col items-center justify-center px-6 bg-[#f8fbff] text-center max-w-sm mx-auto">
+        <div className="w-16 h-16 rounded-full bg-rose-50 border-2 border-rose-200 flex items-center justify-center mx-auto mb-4">
+          <AlertCircle className="w-8 h-8 text-rose-600" />
+        </div>
+        <h3 className="text-xl font-black text-slate-900 mb-2">Payment Confirmation</h3>
+        <p className="text-slate-500 text-xs mb-6 font-medium">
+          If you just completed payment on PhonePe, tap below to confirm and reveal your 6-digit release code.
+        </p>
+        <button
+          onClick={handleManualReconcile}
+          disabled={isRetrying}
+          className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-sm rounded-2xl shadow-lg shadow-emerald-200 transition-all flex items-center justify-center gap-2 mb-3 disabled:opacity-50"
+        >
+          {isRetrying ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCw className="w-5 h-5" />}
+          <span>{isRetrying ? 'Confirming...' : 'I Have Paid — Get Release Code'}</span>
+        </button>
+        <button
+          onClick={() => {
+            playKeySound('tap');
+            router.push('/');
+          }}
+          className="text-slate-400 font-bold text-xs py-2 hover:text-slate-600"
+        >
+          Go Back Home
+        </button>
       </div>
     );
   }
