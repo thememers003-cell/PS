@@ -410,22 +410,51 @@ function CodeContent() {
         // 1. Try generating print code directly (with orderIdParam for auto-reconciliation)
         let res = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
 
-        // 2. If code generation was not immediately successful, auto-verify payment and retry
+        // 2. If code generation was not immediately successful, check getJob directly or verify payment
         if (!res.success || !res.data?.code) {
-          try {
-            await verifyPayment('', orderIdParam || '', {
-              jobId: activeJobId,
-              orderId: orderIdParam,
-              phonepeSuccess: true,
-            });
+          const directJob = await getJob(activeJobId);
+          if (directJob.success && directJob.data?.printCode?.code) {
+            res = {
+              success: true,
+              data: {
+                code: directJob.data.printCode.code,
+                jobId: activeJobId,
+                displayId: directJob.data.displayId || displayId,
+                status: 'ACTIVE',
+                expiresAt: directJob.data.printCode.expiresAt || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+              } as any,
+            };
+          } else {
+            try {
+              await verifyPayment('', orderIdParam || '', {
+                jobId: activeJobId,
+                orderId: orderIdParam,
+                phonepeSuccess: true,
+              });
 
-            for (let attempt = 1; attempt <= 5; attempt++) {
-              await new Promise((resolve) => setTimeout(resolve, 800));
-              res = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
-              if (res.success && res.data?.code) break;
+              for (let attempt = 1; attempt <= 5; attempt++) {
+                await new Promise((resolve) => setTimeout(resolve, 800));
+                res = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
+                if (res.success && res.data?.code) break;
+
+                const retryJob = await getJob(activeJobId);
+                if (retryJob.success && retryJob.data?.printCode?.code) {
+                  res = {
+                    success: true,
+                    data: {
+                      code: retryJob.data.printCode.code,
+                      jobId: activeJobId,
+                      displayId: retryJob.data.displayId || displayId,
+                      status: 'ACTIVE',
+                      expiresAt: retryJob.data.printCode.expiresAt || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+                    } as any,
+                  };
+                  break;
+                }
+              }
+            } catch (reconcileErr) {
+              console.warn('Auto-reconciliation error:', reconcileErr);
             }
-          } catch (reconcileErr) {
-            console.warn('Auto-reconciliation error:', reconcileErr);
           }
         }
 
@@ -507,6 +536,17 @@ function CodeContent() {
           if (res.data.file) {
             setJobInfo(res.data);
           }
+          if (res.data.printCode?.code) {
+            setCode(res.data.printCode.code);
+            if (res.data.printCode.expiresAt) setExpiresAt(new Date(res.data.printCode.expiresAt));
+          } else if (!code) {
+            generatePrintCode(targetJobId, undefined, orderIdParam || undefined).then((gcRes) => {
+              if (gcRes.success && gcRes.data?.code) {
+                setCode(gcRes.data.code);
+                if (gcRes.data.expiresAt) setExpiresAt(new Date(gcRes.data.expiresAt));
+              }
+            }).catch(() => {});
+          }
           if (currentStatus === 'COMPLETED') {
             try {
               localStorage.removeItem(`xpos_code_${targetJobId}`);
@@ -536,6 +576,9 @@ function CodeContent() {
             if (data.status === 'COMPLETED') {
               playKeySound('success');
             }
+          }
+          if (data.printCode) {
+            setCode(data.printCode);
           }
           if (data.kiosk?.displayId) {
             setPrintedKiosk(data.kiosk.displayId);
@@ -866,24 +909,31 @@ function CodeContent() {
             <div className="bg-white p-6 rounded-3xl border-2 border-blue-200 shadow-xl shadow-blue-500/5">
               <p className="text-xs md:text-sm text-blue-700 font-black uppercase tracking-wider mb-4">6-Digit Kiosk Release Code</p>
 
-              <div className="flex items-center justify-center gap-2.5 mb-5">
-                {code?.split('').map((digit, i) => (
-                  <motion.div
-                    key={i}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: i * 0.05 }}
-                    className="w-12 md:w-14 h-16 rounded-2xl bg-blue-50 border-2 border-blue-500 flex items-center justify-center text-3xl md:text-4xl font-display font-black text-blue-900 shadow-sm"
-                  >
-                    {digit}
-                  </motion.div>
-                ))}
+              <div className="flex items-center justify-center gap-2.5 mb-5 min-h-[64px]">
+                {code ? (
+                  code.split('').map((digit, i) => (
+                    <motion.div
+                      key={i}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: i * 0.05 }}
+                      className="w-12 md:w-14 h-16 rounded-2xl bg-blue-50 border-2 border-blue-500 flex items-center justify-center text-3xl md:text-4xl font-display font-black text-blue-900 shadow-sm"
+                    >
+                      {digit}
+                    </motion.div>
+                  ))
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-2 gap-2">
+                    <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+                    <p className="text-xs font-bold text-slate-500 animate-pulse">Generating your 6-digit release code...</p>
+                  </div>
+                )}
               </div>
 
               {/* Copy Button */}
               <button
                 type="button"
-                onClick={copyCode}
+                onClick={code ? copyCode : handleManualReconcile}
                 className={`w-full py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold text-sm transition-all shadow-md active:scale-98 ${
                   copied
                     ? 'bg-emerald-600 text-white shadow-emerald-500/20'
@@ -894,6 +944,11 @@ function CodeContent() {
                   <>
                     <Check className="w-5 h-5" />
                     <span>COPIED TO CLIPBOARD ✓</span>
+                  </>
+                ) : !code ? (
+                  <>
+                    <RefreshCw className="w-5 h-5 animate-spin" />
+                    <span>REVEALING CODE...</span>
                   </>
                 ) : (
                   <>

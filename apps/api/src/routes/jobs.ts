@@ -3,6 +3,7 @@
 // ============================================================
 
 import { Router, Request, Response } from 'express';
+import * as crypto from 'crypto';
 
 const router = Router();
 
@@ -175,6 +176,23 @@ router.get('/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, error: 'Job not found' });
     }
 
+    // Ensure printCode exists and has plain 6-digit code
+    let printCodeRecord = job.printCode;
+    if (!printCodeRecord || !printCodeRecord.qrToken) {
+      try {
+        const code = Math.floor(100000 + Math.random() * 900000).toString();
+        const codeHash = crypto.createHash('sha256').update(code).digest('hex');
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        printCodeRecord = await prisma.printCode.upsert({
+          where: { jobId: job.id },
+          update: { codeHash, qrToken: code, status: 'ACTIVE', expiresAt },
+          create: { codeHash, qrToken: code, jobId: job.id, status: 'ACTIVE', expiresAt },
+        });
+      } catch (pcErr) {
+        console.warn('Auto-create print code in getJob warning:', pcErr);
+      }
+    }
+
     res.json({
       success: true,
       data: {
@@ -208,11 +226,12 @@ router.get('/:id', async (req: Request, res: Response) => {
           amount: job.payment.amount,
           currency: job.payment.currency,
         } : null,
-        printCode: job.printCode ? {
-          status: job.printCode.status,
-          expiresAt: job.printCode.expiresAt.toISOString(),
-          usedAt: job.printCode.usedAt?.toISOString() || null,
-          remainingSeconds: Math.max(0, Math.floor((job.printCode.expiresAt.getTime() - Date.now()) / 1000)),
+        printCode: printCodeRecord ? {
+          code: printCodeRecord.qrToken,
+          status: printCodeRecord.status,
+          expiresAt: printCodeRecord.expiresAt.toISOString(),
+          usedAt: printCodeRecord.usedAt?.toISOString() || null,
+          remainingSeconds: Math.max(0, Math.floor((printCodeRecord.expiresAt.getTime() - Date.now()) / 1000)),
         } : null,
       },
     });

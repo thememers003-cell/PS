@@ -66,17 +66,20 @@ router.post('/generate', async (req: Request, res: Response) => {
       if (activeOrderId) {
         try {
           const paymentProvider = req.app.locals.payment || createPaymentProvider();
-          // Non-blocking provider verification attempt
-          const verification = await paymentProvider.verifyPayment(
+          // Asynchronously verify with provider in background to sync UTR without blocking code generation
+          paymentProvider.verifyPayment(
             activeOrderId,
             paymentData || { phonepeSuccess: true }
-          ).catch(() => null);
-
-          if (verification?.verified && verification?.providerRef) {
-            verificationRef = verification.providerRef;
-          }
+          ).then((verification: any) => {
+            if (verification?.providerRef) {
+              prisma.payment.updateMany({
+                where: { jobId: job.id },
+                data: { providerRef: verification.providerRef },
+              }).catch(() => {});
+            }
+          }).catch(() => {});
         } catch (autoErr) {
-          console.warn('Provider status check error (proceeding to mark PAID):', autoErr);
+          console.warn('Provider status check error:', autoErr);
         }
       }
 
@@ -149,25 +152,8 @@ router.post('/generate', async (req: Request, res: Response) => {
       }
     }
 
-    // Check if job is already completed or used
+    // Check if job is already completed or has active code
     const existingCode = job.printCode || await prisma.printCode.findUnique({ where: { jobId: job.id } });
-    if (job.status === 'COMPLETED' || existingCode?.status === 'USED') {
-      return res.json({
-        success: true,
-        data: {
-          code: existingCode?.qrToken || null,
-          jobId: job.id,
-          displayId: job.displayId,
-          status: 'COMPLETED',
-          isCompleted: true,
-          expiresAt: existingCode?.expiresAt?.toISOString() || new Date().toISOString(),
-          remainingSeconds: 0,
-          allowedKioskId: existingCode?.allowedKioskId || null,
-        },
-      });
-    }
-
-    // If active code already exists with valid plain token, ALWAYS return existing code
     if (existingCode && existingCode.qrToken && existingCode.status === 'ACTIVE') {
       return res.json({
         success: true,
@@ -179,6 +165,22 @@ router.post('/generate', async (req: Request, res: Response) => {
           expiresAt: existingCode.expiresAt.toISOString(),
           remainingSeconds: Math.max(0, Math.floor((existingCode.expiresAt.getTime() - Date.now()) / 1000)),
           allowedKioskId: existingCode.allowedKioskId,
+        },
+      });
+    }
+
+    if (existingCode && existingCode.qrToken && (job.status === 'COMPLETED' || existingCode.status === 'USED')) {
+      return res.json({
+        success: true,
+        data: {
+          code: existingCode.qrToken,
+          jobId: job.id,
+          displayId: job.displayId,
+          status: 'COMPLETED',
+          isCompleted: true,
+          expiresAt: existingCode.expiresAt?.toISOString() || new Date().toISOString(),
+          remainingSeconds: 0,
+          allowedKioskId: existingCode.allowedKioskId || null,
         },
       });
     }
