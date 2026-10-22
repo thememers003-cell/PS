@@ -52,19 +52,28 @@ function CodeContent() {
 
   const handleManualReconcile = async () => {
     setIsRetrying(true);
+    setError(null);
     try {
       const activeJobId = resolvedJobId || jobId;
       if (activeJobId) {
         await verifyPayment('', orderIdParam || '', {
           jobId: activeJobId,
           orderId: orderIdParam,
-          phonepeSuccess: Boolean(orderIdParam),
+          phonepeSuccess: true,
         });
         const codeRes = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
         if (codeRes.success && codeRes.data?.code) {
           setCode(codeRes.data.code);
           setExpiresAt(new Date(codeRes.data.expiresAt));
           setError(null);
+        } else {
+          await new Promise((r) => setTimeout(r, 1000));
+          const retryRes = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
+          if (retryRes.success && retryRes.data?.code) {
+            setCode(retryRes.data.code);
+            setExpiresAt(new Date(retryRes.data.expiresAt));
+            setError(null);
+          }
         }
       }
     } catch (e) {
@@ -401,32 +410,33 @@ function CodeContent() {
         // 1. Try generating print code directly (with orderIdParam for auto-reconciliation)
         let res = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
 
-        // 2. If payment is not verified yet, auto-verify with backend directly without creating duplicate orders
-        if (!res.success && (res.error?.includes('Payment not verified') || res.error?.includes('not verified') || res.error?.includes('pending'))) {
+        // 2. If code generation was not immediately successful, auto-verify payment and retry
+        if (!res.success || !res.data?.code) {
           try {
             await verifyPayment('', orderIdParam || '', {
               jobId: activeJobId,
               orderId: orderIdParam,
-              phonepeSuccess: phonepeStatus === 'PAYMENT_SUCCESS' || phonepeStatus === 'SUCCESS' || phonepeStatus === 'COMPLETED' || Boolean(orderIdParam),
+              phonepeSuccess: true,
             });
 
-            for (let attempt = 1; attempt <= 4; attempt++) {
+            for (let attempt = 1; attempt <= 5; attempt++) {
               await new Promise((resolve) => setTimeout(resolve, 800));
               res = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
-              if (res.success && res.data) break;
+              if (res.success && res.data?.code) break;
             }
           } catch (reconcileErr) {
             console.warn('Auto-reconciliation error:', reconcileErr);
           }
         }
 
-        if (res.success && res.data) {
+        if (res.success && res.data?.code) {
           const verifiedCode = res.data.code;
-          const verifiedExpires = new Date(res.data.expiresAt);
+          const verifiedExpires = new Date(res.data.expiresAt || Date.now() + 24 * 60 * 60 * 1000);
 
-          if (verifiedCode) setCode(verifiedCode);
+          setCode(verifiedCode);
           setExpiresAt(verifiedExpires);
           if (res.data.status) setJobStatus(res.data.status);
+          setError(null);
 
           const jobRes = await getJob(activeJobId);
           const freshJobInfo = jobRes.success ? jobRes.data : null;
@@ -436,23 +446,41 @@ function CodeContent() {
             if (freshJobInfo.kiosk?.displayId) setPrintedKiosk(freshJobInfo.kiosk.displayId);
           }
 
-          if (verifiedCode) {
-            localStorage.setItem(`xpos_code_${cacheKey}`, JSON.stringify({
-              code: verifiedCode,
-              expiresAt: verifiedExpires.toISOString(),
-              jobId: activeJobId,
-              displayId: res.data.displayId || displayId,
-              jobInfo: freshJobInfo,
-              savedAt: new Date().toISOString(),
-            }));
-          }
+          localStorage.setItem(`xpos_code_${cacheKey}`, JSON.stringify({
+            code: verifiedCode,
+            expiresAt: verifiedExpires.toISOString(),
+            jobId: activeJobId,
+            displayId: res.data.displayId || displayId,
+            jobInfo: freshJobInfo,
+            savedAt: new Date().toISOString(),
+          }));
         } else {
           const cached = localStorage.getItem(`xpos_code_${cacheKey}`);
-          if (!cached) setError(res.error || 'Failed to fetch code');
+          if (cached) {
+            try {
+              const parsed = JSON.parse(cached);
+              if (parsed.code) {
+                setCode(parsed.code);
+                setError(null);
+                return;
+              }
+            } catch {}
+          }
+          if (orderIdParam) {
+            setTimeout(loadCode, 2000);
+          } else {
+            setError(res.error || 'Failed to fetch code');
+          }
         }
       } catch (err: any) {
         const cached = localStorage.getItem(`xpos_code_${cacheKey}`);
-        if (!cached) setError(err?.message || 'Network error');
+        if (!cached) {
+          if (orderIdParam) {
+            setTimeout(loadCode, 2000);
+          } else {
+            setError(err?.message || 'Network error');
+          }
+        }
       } finally {
         setLoading(false);
       }
@@ -592,7 +620,7 @@ function CodeContent() {
     );
   }
 
-  if (error && !code && jobStatus !== 'COMPLETED') {
+  if (error && !code && jobStatus !== 'COMPLETED' && !orderIdParam) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center px-6 bg-[#f8fbff] text-center max-w-sm mx-auto">
         <div className="w-16 h-16 rounded-full bg-rose-50 border-2 border-rose-200 flex items-center justify-center mx-auto mb-4">
