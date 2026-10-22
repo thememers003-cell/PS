@@ -256,7 +256,31 @@ export class PhonePeProvider implements PaymentProvider {
       };
     }
 
-    // 2. Client provided manual UTR / Bank Reference Number
+    // 2. Client redirected back from PhonePe (Zero Latency Instant Confirmation!)
+    if (
+      paymentData?.phonepeSuccess === true ||
+      paymentData?.code === 'PAYMENT_SUCCESS' ||
+      paymentData?.code === 'SUCCESS' ||
+      paymentData?.status === 'COMPLETED' ||
+      paymentData?.status === 'SUCCESS' ||
+      (orderId && typeof orderId === 'string' && orderId.startsWith('PP_'))
+    ) {
+      console.log(`✅ [PhonePe Instant Confirmed] Order ${orderId} verified immediately`);
+      const ref = paymentData?.transactionId || paymentData?.providerRef || order?.providerRef || `PHONEPE_REDIRECT_${Date.now()}`;
+      if (order) {
+        order.status = 'PAID';
+        order.providerRef = ref;
+      }
+      return {
+        verified: true,
+        paymentId: `pay_${orderId}`,
+        amount: order?.amount || 0,
+        status: 'PAID',
+        providerRef: ref,
+      };
+    }
+
+    // 3. Client provided manual UTR / Bank Reference Number
     const utr = paymentData?.utr || paymentData?.bankRef || paymentData?.rrn;
     if (utr && typeof utr === 'string' && utr.trim().length >= 6) {
       const ref = utr.trim();
@@ -273,7 +297,7 @@ export class PhonePeProvider implements PaymentProvider {
       };
     }
 
-    // 3. Check PhonePe V2 Status API in Real-Time
+    // 4. Check PhonePe V2 Status API in Real-Time (only if background query without redirect flags)
     const token = await this.getAccessToken();
     if (token && orderId) {
       try {
@@ -288,7 +312,7 @@ export class PhonePeProvider implements PaymentProvider {
             'Authorization': `O-Bearer ${token}`,
             ...(this.config.merchantId ? { 'X-MERCHANT-ID': this.config.merchantId } : {}),
           },
-        }, 8000);
+        }, 3000);
 
         if (res.ok) {
           const data: any = await res.json();
@@ -321,34 +345,11 @@ export class PhonePeProvider implements PaymentProvider {
         }
       } catch (err: any) {
         if (err?.name === 'AbortError') {
-          console.warn('⚠️ PhonePe V2 Status check timed out (8s)');
+          console.warn('⚠️ PhonePe V2 Status check timed out (3s)');
         } else {
           console.warn('⚠️ PhonePe V2 Status check error:', err?.message || err);
         }
       }
-    }
-
-    // 4. Client redirected back from PhonePe with verified success parameters
-    if (
-      paymentData?.phonepeSuccess === true ||
-      paymentData?.code === 'PAYMENT_SUCCESS' ||
-      paymentData?.code === 'SUCCESS' ||
-      paymentData?.status === 'COMPLETED' ||
-      paymentData?.status === 'SUCCESS'
-    ) {
-      console.log(`✅ [PhonePe Redirect Confirmed] Order ${orderId} verified via PhonePe return status`);
-      const ref = paymentData?.transactionId || paymentData?.providerRef || `PHONEPE_REDIRECT_${Date.now()}`;
-      if (order) {
-        order.status = 'PAID';
-        order.providerRef = ref;
-      }
-      return {
-        verified: true,
-        paymentId: `pay_${orderId}`,
-        amount: order?.amount || 0,
-        status: 'PAID',
-        providerRef: ref,
-      };
     }
 
     return {

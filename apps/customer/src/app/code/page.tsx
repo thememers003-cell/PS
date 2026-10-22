@@ -56,24 +56,20 @@ function CodeContent() {
     try {
       const activeJobId = resolvedJobId || jobId;
       if (activeJobId) {
-        await verifyPayment('', orderIdParam || '', {
-          jobId: activeJobId,
-          orderId: orderIdParam,
-          phonepeSuccess: true,
-        });
+        const jobRes = await getJob(activeJobId);
+        if (jobRes.success && jobRes.data?.printCode?.code) {
+          setCode(jobRes.data.printCode.code);
+          if (jobRes.data.printCode.expiresAt) setExpiresAt(new Date(jobRes.data.printCode.expiresAt));
+          setError(null);
+          setIsRetrying(false);
+          return;
+        }
+
         const codeRes = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
         if (codeRes.success && codeRes.data?.code) {
           setCode(codeRes.data.code);
           setExpiresAt(new Date(codeRes.data.expiresAt));
           setError(null);
-        } else {
-          await new Promise((r) => setTimeout(r, 1000));
-          const retryRes = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
-          if (retryRes.success && retryRes.data?.code) {
-            setCode(retryRes.data.code);
-            setExpiresAt(new Date(retryRes.data.expiresAt));
-            setError(null);
-          }
         }
       }
     } catch (e) {
@@ -407,10 +403,10 @@ function CodeContent() {
 
         setResolvedJobId(activeJobId);
 
-        // 1. Try generating print code directly (with orderIdParam for auto-reconciliation)
+        // 1. Try generating print code directly (with orderIdParam for instant zero-latency issuance)
         let res = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
 
-        // 2. If code generation was not immediately successful, check getJob directly or verify payment
+        // 2. If code generation was not immediately returned, fetch getJob directly
         if (!res.success || !res.data?.code) {
           const directJob = await getJob(activeJobId);
           if (directJob.success && directJob.data?.printCode?.code) {
@@ -424,37 +420,6 @@ function CodeContent() {
                 expiresAt: directJob.data.printCode.expiresAt || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
               } as any,
             };
-          } else {
-            try {
-              await verifyPayment('', orderIdParam || '', {
-                jobId: activeJobId,
-                orderId: orderIdParam,
-                phonepeSuccess: true,
-              });
-
-              for (let attempt = 1; attempt <= 5; attempt++) {
-                await new Promise((resolve) => setTimeout(resolve, 800));
-                res = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
-                if (res.success && res.data?.code) break;
-
-                const retryJob = await getJob(activeJobId);
-                if (retryJob.success && retryJob.data?.printCode?.code) {
-                  res = {
-                    success: true,
-                    data: {
-                      code: retryJob.data.printCode.code,
-                      jobId: activeJobId,
-                      displayId: retryJob.data.displayId || displayId,
-                      status: 'ACTIVE',
-                      expiresAt: retryJob.data.printCode.expiresAt || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-                    } as any,
-                  };
-                  break;
-                }
-              }
-            } catch (reconcileErr) {
-              console.warn('Auto-reconciliation error:', reconcileErr);
-            }
           }
         }
 
@@ -539,13 +504,6 @@ function CodeContent() {
           if (res.data.printCode?.code) {
             setCode(res.data.printCode.code);
             if (res.data.printCode.expiresAt) setExpiresAt(new Date(res.data.printCode.expiresAt));
-          } else if (!code) {
-            generatePrintCode(targetJobId, undefined, orderIdParam || undefined).then((gcRes) => {
-              if (gcRes.success && gcRes.data?.code) {
-                setCode(gcRes.data.code);
-                if (gcRes.data.expiresAt) setExpiresAt(new Date(gcRes.data.expiresAt));
-              }
-            }).catch(() => {});
           }
           if (currentStatus === 'COMPLETED') {
             try {
