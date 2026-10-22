@@ -8,11 +8,22 @@ export function getApiUrl(): string {
     if (params.get('api') === 'local') {
       return 'http://localhost:4000';
     }
+    if (params.get('api') === 'cloud') {
+      return 'https://xpos-printing-cloud.onrender.com';
+    }
     const hostname = window.location.hostname;
     if (hostname.includes('loca.lt')) {
       return 'https://xpos-api-cloud.loca.lt';
     }
-    return process.env.NEXT_PUBLIC_API_URL || 'https://xpos-printing-cloud.onrender.com';
+    // Mobile phone connected to local PC via Wi-Fi LAN IP (e.g. 192.168.x.x or 10.x.x.x)
+    if (/^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(hostname)) {
+      return `http://${hostname}:4000`;
+    }
+    // Public web domain (riseupsolutions.in, vercel.app, etc.)
+    if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+      return 'https://xpos-printing-cloud.onrender.com';
+    }
+    return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
   }
   return process.env.NEXT_PUBLIC_API_URL || 'https://xpos-printing-cloud.onrender.com';
 }

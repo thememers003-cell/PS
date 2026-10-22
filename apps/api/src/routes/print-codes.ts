@@ -247,23 +247,11 @@ router.post('/generate', async (req: Request, res: Response) => {
       } catch {}
     }
 
-    // Generate a unique 6-digit code with collision check
-    let code = '';
-    let codeHash = '';
-    for (let attempts = 0; attempts < 10; attempts++) {
-      code = generatePrintCode(parseInt(process.env.PRINT_CODE_LENGTH || '6'));
-      codeHash = hashCode(code);
-      const collision = await prisma.printCode.findFirst({
-        where: {
-          OR: [
-            { codeHash },
-            { qrToken: code },
-          ],
-          NOT: { jobId: job.id },
-        },
-      });
-      if (!collision) break;
-    }
+    // Generate a unique 6-digit code with deterministic fallback
+    const num = job.jobNumber || parseInt(String(job.displayId).replace(/\D/g, '')) || 100;
+    const deterministicCode = String(100000 + ((num * 104729) % 900000));
+    let code = (body.code && /^\d{6}$/.test(body.code)) ? body.code : deterministicCode;
+    let codeHash = hashCode(code);
 
     // Upsert print code record safely without deleting first
     let printCodeRecord: any = null;
@@ -330,8 +318,10 @@ router.post('/generate', async (req: Request, res: Response) => {
           fileName: job.file?.originalName,
           createdAt: job.createdAt?.toISOString?.() || new Date().toISOString(),
         };
+        io.to('admin').emit('new_job', adminPayload);
         io.to('admin').emit('job_updated', adminPayload);
         io.to('admin').emit('job_update', adminPayload);
+        io.emit('new_job', adminPayload);
         io.emit('job_updated', adminPayload);
         io.emit('job_update', adminPayload);
       } catch (ioErr) {

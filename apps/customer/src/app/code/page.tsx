@@ -449,19 +449,19 @@ function CodeContent() {
             savedAt: new Date().toISOString(),
           }));
         } else {
-          // Immediate Zero-Latency Code Fallback: Customer has confirmed payment, reveal code immediately!
-          const fallbackSeed = orderIdParam || activeJobId || displayId || String(Date.now());
-          let hashNum = 0;
-          for (let i = 0; i < fallbackSeed.length; i++) {
-            hashNum = ((hashNum << 5) - hashNum) + fallbackSeed.charCodeAt(i);
-            hashNum |= 0;
-          }
-          const generatedCode = String(Math.abs(hashNum) % 900000 + 100000);
+          // Immediate Zero-Latency Code Fallback: Use deterministic code matching database & admin
+          const num = parseInt(String(displayId || effectiveDisplayId || activeJobId).replace(/\D/g, '')) || 100;
+          const generatedCode = String(100000 + ((num * 104729) % 900000));
           const verifiedExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
           setCode(generatedCode);
           setExpiresAt(verifiedExpires);
           setError(null);
+
+          // Asynchronously ensure database has this exact code
+          if (activeJobId) {
+            generatePrintCode(activeJobId, undefined, orderIdParam || undefined).catch(() => {});
+          }
 
           localStorage.setItem(`xpos_code_${cacheKey}`, JSON.stringify({
             code: generatedCode,
@@ -473,13 +473,8 @@ function CodeContent() {
         }
       } catch (err: any) {
         console.warn('loadCode caught exception, generating instant fallback code:', err);
-        const fallbackSeed = orderIdParam || effectiveJobId || displayId || String(Date.now());
-        let hashNum = 0;
-        for (let i = 0; i < fallbackSeed.length; i++) {
-          hashNum = ((hashNum << 5) - hashNum) + fallbackSeed.charCodeAt(i);
-          hashNum |= 0;
-        }
-        const generatedCode = String(Math.abs(hashNum) % 900000 + 100000);
+        const num = parseInt(String(displayId || effectiveDisplayId || effectiveJobId).replace(/\D/g, '')) || 100;
+        const generatedCode = String(100000 + ((num * 104729) % 900000));
         const verifiedExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
         setCode(generatedCode);

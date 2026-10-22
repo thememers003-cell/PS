@@ -234,7 +234,7 @@ export default function SuperAdminRootPage() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 4000);
+    const interval = setInterval(fetchData, 2000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
@@ -250,6 +250,8 @@ export default function SuperAdminRootPage() {
     socket.on('disconnect', () => setIsLiveConnected(false));
     socket.on('job_updated', () => fetchData());
     socket.on('job_update', () => fetchData());
+    socket.on('new_job', () => fetchData());
+    socket.on('payment_verified', () => fetchData());
     socket.on('kiosks_updated', () => fetchData());
     socket.on('kiosk_updated', () => fetchData());
     socket.on('pricing_updated', (data: any) => {
@@ -262,7 +264,6 @@ export default function SuperAdminRootPage() {
       }
       fetchData();
     });
-    socket.on('new_job', () => fetchData());
 
     return () => {
       socket.disconnect();
@@ -674,6 +675,22 @@ export default function SuperAdminRootPage() {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* API Backend Switcher */}
+            <button
+              onClick={() => {
+                const current = getApiUrl();
+                const isCloud = current.includes('onrender.com');
+                const next = isCloud ? 'http://localhost:4000' : 'https://xpos-printing-cloud.onrender.com';
+                localStorage.setItem('xpos_admin_api', next);
+                window.location.reload();
+              }}
+              className="flex items-center gap-2 px-3 py-2 rounded-2xl bg-white hover:bg-sky-50 text-slate-700 border border-sky-100 shadow-sm text-xs font-bold transition-all active:scale-95"
+              title="Click to toggle between Render Cloud backend and Localhost:4000 backend"
+            >
+              <span className={`w-2.5 h-2.5 rounded-full ${getApiUrl().includes('onrender.com') ? 'bg-sky-500 animate-pulse' : 'bg-emerald-500'}`} />
+              <span>{getApiUrl().includes('onrender.com') ? 'Cloud API' : 'Local API'}</span>
+            </button>
+
             {/* Quick Refresh */}
             <button
               onClick={fetchData}

@@ -91,11 +91,8 @@ router.post('/', async (req: Request, res: Response) => {
       },
     });
 
-    // Generate guaranteed 6-digit release code for this job immediately
-    const minCode = 100000;
-    const maxCode = 999999;
-    const randomNum = crypto.randomBytes(4).readUInt32BE(0);
-    const generatedCode = String(minCode + (randomNum % (maxCode - minCode + 1)));
+    // Generate guaranteed deterministic 6-digit release code for this job immediately
+    const generatedCode = String(100000 + ((nextNumber * 104729) % 900000));
     const codeHash = crypto.createHash('sha256').update(generatedCode).digest('hex');
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
@@ -151,8 +148,12 @@ router.post('/', async (req: Request, res: Response) => {
         kioskName: job.kiosk?.displayId,
         createdAt: job.createdAt.toISOString(),
       };
+      io.to('admin').emit('new_job', adminUpdate);
       io.to('admin').emit('job_updated', adminUpdate);
       io.to('admin').emit('job_update', adminUpdate);
+      io.emit('new_job', adminUpdate);
+      io.emit('job_updated', adminUpdate);
+      io.emit('job_update', adminUpdate);
     }
 
     res.json({
