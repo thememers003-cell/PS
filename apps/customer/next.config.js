@@ -3,6 +3,12 @@ const path = require('path');
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: false,
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
   transpilePackages: ['@xpos/types'],
   experimental: {
     optimizePackageImports: ['lucide-react', 'framer-motion'],

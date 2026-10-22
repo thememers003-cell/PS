@@ -137,8 +137,9 @@ export async function createJob(data: any) {
   });
 }
 
-export async function getJob(jobId: string) {
-  return apiRequest<any>(`/api/jobs/${jobId}`);
+export async function getJob(jobId: string, orderId?: string) {
+  const query = orderId ? `?orderId=${encodeURIComponent(orderId)}` : '';
+  return apiRequest<any>(`/api/jobs/${jobId}${query}`);
 }
 
 // ── Payments ──
@@ -175,7 +176,7 @@ export async function verifyPrintCode(code: string, kioskId: string) {
 
 export async function pairKioskWithCode(data: {
   code?: string;
-  kioskId: string;
+  kioskId?: string;
   pairToken?: string;
   jobId?: string;
 }) {

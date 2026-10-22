@@ -408,7 +408,7 @@ function CodeContent() {
 
         // 2. If code generation was not immediately returned, fetch getJob directly
         if (!res.success || !res.data?.code) {
-          const directJob = await getJob(activeJobId);
+          const directJob = await getJob(activeJobId, orderIdParam || undefined);
           if (directJob.success && directJob.data?.printCode?.code) {
             res = {
               success: true,
@@ -432,7 +432,7 @@ function CodeContent() {
           if (res.data.status) setJobStatus(res.data.status);
           setError(null);
 
-          const jobRes = await getJob(activeJobId);
+          const jobRes = await getJob(activeJobId, orderIdParam || undefined);
           const freshJobInfo = jobRes.success ? jobRes.data : null;
           if (freshJobInfo) {
             setJobInfo(freshJobInfo);
@@ -470,11 +470,6 @@ function CodeContent() {
             displayId: displayId || effectiveDisplayId,
             savedAt: new Date().toISOString(),
           }));
-
-          pairKioskWithCode({
-            code: generatedCode,
-            jobId: activeJobId,
-          }).catch(() => {});
         }
       } catch (err: any) {
         console.warn('loadCode caught exception, generating instant fallback code:', err);

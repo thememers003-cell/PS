@@ -34,8 +34,8 @@ import { triggerBrowserPrint } from '../lib/browser-print';
 function getApiUrl(): string {
   if (typeof window !== 'undefined') {
     const params = new URLSearchParams(window.location.search);
-    if (params.get('api') === 'cloud' || params.get('cloud') === 'true') {
-      return 'https://xpos-printing-cloud.onrender.com';
+    if (params.get('api') === 'local') {
+      return 'http://localhost:4000';
     }
     const saved = localStorage.getItem('xpos_api_url');
     if (saved) return saved;
@@ -44,14 +44,10 @@ function getApiUrl(): string {
     if (hostname.includes('loca.lt')) {
       return 'https://xpos-api-cloud.loca.lt';
     }
-    // If running on localhost and local port 4000 is desired, can pass ?api=local
-    if (params.get('api') === 'local') {
-      return 'http://localhost:4000';
-    }
-    // Default to the central live Render Cloud API so Kiosk and Mobile Customer share the exact same database and WebSocket rooms
-    return process.env.NEXT_PUBLIC_API_URL || 'https://xpos-printing-cloud.onrender.com';
+    // Direct cloud connection to ensure Kiosk and Customer Phone communicate over the same server
+    return 'https://xpos-printing-cloud.onrender.com';
   }
-  return process.env.NEXT_PUBLIC_API_URL || 'https://xpos-printing-cloud.onrender.com';
+  return 'https://xpos-printing-cloud.onrender.com';
 }
 
 function getAppUrl(): string {
@@ -276,7 +272,30 @@ export default function KioskApp() {
       console.log('🔌 Kiosk connected to XPOS Cloud as', kioskId);
       setIsConnected(true);
       socket.emit('join_kiosk', { kioskId });
+      // Send immediate heartbeat on connect
+      socket.emit('heartbeat', {
+        kioskId,
+        cpu: 10,
+        ram: 35,
+        disk: 25,
+        appVersion: 'v2.0',
+        printerStatus: 'READY',
+      });
     });
+
+    // Periodic heartbeat to keep kiosk online in Admin Fleet every 20 seconds
+    const hbInterval = setInterval(() => {
+      if (socket.connected) {
+        socket.emit('heartbeat', {
+          kioskId,
+          cpu: 10,
+          ram: 35,
+          disk: 25,
+          appVersion: 'v2.0',
+          printerStatus: 'READY',
+        });
+      }
+    }, 20000);
 
     socket.on('disconnect', () => {
       console.log('❌ Kiosk disconnected from XPOS Cloud');

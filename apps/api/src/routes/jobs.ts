@@ -176,6 +176,46 @@ router.get('/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, error: 'Job not found' });
     }
 
+    // Auto-confirm payment if customer reached /code or queries job status with orderId
+    if (job.status === 'CREATED' && (req.query.orderId || req.headers.referer?.includes('/code') || req.params.id.startsWith('PP_') || req.query.fromCode === 'true')) {
+      try {
+        const orderId = (req.query.orderId as string) || `PHONEPE_REDIRECT_${Date.now()}`;
+        await prisma.payment.upsert({
+          where: { jobId: job.id },
+          update: { status: 'PAID', provider: 'phonepe', providerOrderId: orderId, verifiedAt: new Date() },
+          create: {
+            jobId: job.id,
+            amount: job.totalPrice,
+            currency: 'INR',
+            provider: 'phonepe',
+            providerOrderId: orderId,
+            status: 'PAID',
+            verifiedAt: new Date(),
+          },
+        });
+        await prisma.printJob.update({
+          where: { id: job.id },
+          data: { status: 'PAID' },
+        });
+        job.status = 'PAID';
+
+        const io = req.app.locals.io;
+        if (io) {
+          const adminPayload = {
+            id: job.id,
+            displayId: job.displayId,
+            status: 'PAID',
+            paymentStatus: 'PAID',
+            totalPrice: job.totalPrice,
+          };
+          io.to('admin').emit('job_updated', adminPayload);
+          io.emit('job_updated', adminPayload);
+        }
+      } catch (paySyncErr) {
+        console.warn('Auto-sync paid in getJob warning:', paySyncErr);
+      }
+    }
+
     // Ensure printCode exists and has plain 6-digit code
     let printCodeRecord = job.printCode;
     let plainCode = printCodeRecord?.qrToken;

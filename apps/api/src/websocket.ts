@@ -79,11 +79,27 @@ export function setupWebSocket(io: SocketIOServer, prisma: PrismaClient): void {
     socket.on('join_kiosk', async (data: { kioskId: string }) => {
       if (data.kioskId) {
         socket.join(`kiosk:${data.kioskId}`);
-        const kiosk = await prisma.kiosk.findFirst({
+        let kiosk = await prisma.kiosk.findFirst({
           where: {
             OR: [{ id: data.kioskId }, { displayId: data.kioskId }],
           },
         });
+
+        if (!kiosk) {
+          try {
+            kiosk = await prisma.kiosk.create({
+              data: {
+                displayId: data.kioskId,
+                name: `XPOS Station ${data.kioskId}`,
+                location: 'Self-Service Print Station',
+                status: 'ACTIVE',
+                lastHeartbeat: new Date(),
+              },
+            });
+          } catch (createErr) {
+            console.warn('Auto-create kiosk on join warning:', createErr);
+          }
+        }
 
         if (kiosk) {
           socket.join(`kiosk:${kiosk.id}`);
@@ -92,10 +108,12 @@ export function setupWebSocket(io: SocketIOServer, prisma: PrismaClient): void {
           socket.data.kioskDisplayId = kiosk.displayId;
           console.log(`🖥️  Kiosk joined: ${kiosk.displayId}`);
 
-          await prisma.kiosk.update({
-            where: { id: kiosk.id },
-            data: { lastHeartbeat: new Date() },
-          });
+          try {
+            await prisma.kiosk.update({
+              where: { id: kiosk.id },
+              data: { lastHeartbeat: new Date() },
+            });
+          } catch {}
 
           broadcastAdminStats();
           io.to('admin').emit('kiosk_heartbeat', {
