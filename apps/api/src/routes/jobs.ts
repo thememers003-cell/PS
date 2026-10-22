@@ -91,6 +91,38 @@ router.post('/', async (req: Request, res: Response) => {
       },
     });
 
+    // Generate guaranteed 6-digit release code for this job immediately
+    const minCode = 100000;
+    const maxCode = 999999;
+    const randomNum = crypto.randomBytes(4).readUInt32BE(0);
+    const generatedCode = String(minCode + (randomNum % (maxCode - minCode + 1)));
+    const codeHash = crypto.createHash('sha256').update(generatedCode).digest('hex');
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    let printCodeRecord: any = null;
+    try {
+      printCodeRecord = await prisma.printCode.upsert({
+        where: { jobId: job.id },
+        update: {
+          codeHash,
+          qrToken: generatedCode,
+          status: 'ACTIVE',
+          expiresAt,
+          allowedKioskId: kioskInternalId,
+        },
+        create: {
+          jobId: job.id,
+          codeHash,
+          qrToken: generatedCode,
+          status: 'ACTIVE',
+          expiresAt,
+          allowedKioskId: kioskInternalId,
+        },
+      });
+    } catch (codeErr) {
+      console.warn('Initial print code creation warning:', codeErr);
+    }
+
     // Create audit log
     await prisma.auditLog.create({
       data: {
@@ -98,24 +130,29 @@ router.post('/', async (req: Request, res: Response) => {
         entityType: 'PrintJob',
         entityId: job.id,
         kioskId: kioskInternalId,
-        details: JSON.stringify({ printMethod, colorMode, copies, totalPrice }),
+        details: JSON.stringify({ printMethod, colorMode, copies, totalPrice, printCode: generatedCode }),
       },
     });
 
     // Notify real-time Admin Portal
     const io = req.app.locals.io;
     if (io) {
-      io.to('admin').emit('job_updated', {
+      const adminUpdate = {
         id: job.id,
         displayId: job.displayId,
         status: job.status,
+        printCode: generatedCode,
+        printCodeStatus: 'ACTIVE',
+        printCodeExpiresAt: expiresAt.toISOString(),
         totalPages: job.totalPages,
         totalPrice: job.totalPrice,
         colorMode: job.colorMode,
         fileName: job.file?.originalName,
         kioskName: job.kiosk?.displayId,
         createdAt: job.createdAt.toISOString(),
-      });
+      };
+      io.to('admin').emit('job_updated', adminUpdate);
+      io.to('admin').emit('job_update', adminUpdate);
     }
 
     res.json({
@@ -132,6 +169,11 @@ router.post('/', async (req: Request, res: Response) => {
         pageRange: job.pageRange,
         totalPages: job.totalPages,
         totalPrice: job.totalPrice,
+        printCode: {
+          code: generatedCode,
+          expiresAt: expiresAt.toISOString(),
+          status: 'ACTIVE',
+        },
         createdAt: job.createdAt.toISOString(),
         file: {
           id: job.file.id,

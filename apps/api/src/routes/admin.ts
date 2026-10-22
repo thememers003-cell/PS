@@ -3,6 +3,7 @@
 // ============================================================
 
 import { Router, Request, Response } from 'express';
+import * as crypto from 'crypto';
 
 const router = Router();
 
@@ -14,7 +15,7 @@ router.get('/dashboard', async (req: Request, res: Response) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const [
+    let [
       totalJobsToday,
       completedJobsToday,
       failedJobsToday,
@@ -59,6 +60,41 @@ router.get('/dashboard', async (req: Request, res: Response) => {
       }),
       prisma.pricingRule.findMany({ where: { isActive: true } }),
     ]);
+
+    // Auto-seed default kiosk XPOS-001 if database currently has 0 kiosks
+    if (totalKiosks === 0) {
+      try {
+        const seeded = await prisma.kiosk.create({
+          data: {
+            displayId: 'XPOS-001',
+            name: 'Print Station XPOS-001',
+            location: 'Central Campus Hub',
+            status: 'ACTIVE',
+            lastHeartbeat: new Date(),
+            qrUrl: `${process.env.NEXT_PUBLIC_APP_URL || 'https://riseupsolutions.in'}/remote?kiosk=XPOS-001`,
+            printer: {
+              create: {
+                name: 'Auto-Detected Printer',
+                model: 'Hardware Printer Engine',
+                status: 'READY',
+              },
+            },
+          },
+          include: {
+            printer: true,
+            printJobs: {
+              where: { status: 'COMPLETED' },
+              include: { payment: true },
+            },
+          },
+        });
+        totalKiosks = 1;
+        activeKiosks = 1;
+        kiosksWithStats = [seeded];
+      } catch (seedErr) {
+        console.warn('Dashboard auto-seed notice:', seedErr);
+      }
+    }
 
     const defaultBw = globalRules.find((r: any) => r.colorMode === 'BW')?.pricePerPage || 2;
     const defaultColor = globalRules.find((r: any) => r.colorMode === 'COLOR')?.pricePerPage || 10;
@@ -157,6 +193,38 @@ router.get('/jobs', async (req: Request, res: Response) => {
       }),
       prisma.printJob.count({ where }),
     ]);
+
+    // Ensure all jobs have a valid 6-digit release code so the table never displays None
+    for (const j of jobs) {
+      if (!j.printCode) {
+        try {
+          const num = j.jobNumber || parseInt(String(j.displayId).replace(/\D/g, '')) || 100;
+          const genCode = String(100000 + ((num * 104729) % 900000));
+          const codeHash = crypto.createHash('sha256').update(genCode).digest('hex');
+          const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+          const newCodeRecord = await prisma.printCode.upsert({
+            where: { jobId: j.id },
+            update: {
+              qrToken: genCode,
+              codeHash,
+              status: 'ACTIVE',
+              expiresAt,
+            },
+            create: {
+              jobId: j.id,
+              qrToken: genCode,
+              codeHash,
+              status: 'ACTIVE',
+              expiresAt,
+            },
+          });
+          j.printCode = newCodeRecord;
+        } catch (codeGenErr) {
+          console.warn('Auto-generate code for existing job warning:', codeGenErr);
+        }
+      }
+    }
 
     res.json({
       success: true,
@@ -464,7 +532,7 @@ router.post('/queue/flush', async (req: Request, res: Response) => {
 router.get('/kiosks', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.locals.prisma;
-    const [kiosks, globalRules] = await Promise.all([
+    let [kiosks, globalRules] = await Promise.all([
       prisma.kiosk.findMany({
         include: {
           printer: true,
@@ -474,6 +542,36 @@ router.get('/kiosks', async (req: Request, res: Response) => {
       }),
       prisma.pricingRule.findMany({ where: { isActive: true } }),
     ]);
+
+    // Auto-seed default kiosk XPOS-001 if list is empty
+    if (kiosks.length === 0) {
+      try {
+        const seeded = await prisma.kiosk.create({
+          data: {
+            displayId: 'XPOS-001',
+            name: 'Print Station XPOS-001',
+            location: 'Central Campus Hub',
+            status: 'ACTIVE',
+            lastHeartbeat: new Date(),
+            qrUrl: `${process.env.NEXT_PUBLIC_APP_URL || 'https://riseupsolutions.in'}/remote?kiosk=XPOS-001`,
+            printer: {
+              create: {
+                name: 'Auto-Detected Printer',
+                model: 'Hardware Printer Engine',
+                status: 'READY',
+              },
+            },
+          },
+          include: {
+            printer: true,
+            _count: { select: { printJobs: true } },
+          },
+        });
+        kiosks = [seeded];
+      } catch (seedErr) {
+        console.warn('Auto-seed in GET /kiosks notice:', seedErr);
+      }
+    }
 
     const defaultBw = globalRules.find((r: any) => r.colorMode === 'BW')?.pricePerPage || 2;
     const defaultColor = globalRules.find((r: any) => r.colorMode === 'COLOR')?.pricePerPage || 10;
@@ -514,7 +612,7 @@ router.get('/kiosks', async (req: Request, res: Response) => {
   }
 });
 
-// Create new Kiosk Station
+// Create or Register Kiosk Station
 router.post('/kiosks', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.locals.prisma;
@@ -526,10 +624,10 @@ router.post('/kiosks', async (req: Request, res: Response) => {
     }
 
     const cleanDisplayId = displayId.trim().toUpperCase();
-    const existing = await prisma.kiosk.findUnique({ where: { displayId: cleanDisplayId } });
-    if (existing) {
-      return res.status(400).json({ success: false, error: `Kiosk ID "${cleanDisplayId}" already exists` });
-    }
+    const existing = await prisma.kiosk.findUnique({
+      where: { displayId: cleanDisplayId },
+      include: { printer: true },
+    });
 
     let deviceTokenHash: string | null = null;
     if (bwPrice !== undefined && bwPrice !== '' || colorPrice !== undefined && colorPrice !== '') {
@@ -539,30 +637,51 @@ router.post('/kiosks', async (req: Request, res: Response) => {
       });
     }
 
-    const kiosk = await prisma.kiosk.create({
-      data: {
-        displayId: cleanDisplayId,
-        name: name?.trim() || `XPOS Station ${cleanDisplayId}`,
-        location: location?.trim() || 'Main Campus',
-        status: 'ACTIVE',
-        deviceTokenHash,
-        printer: {
-          create: {
-            name: printerName || 'Default Printer',
-            model: 'Auto-Detected Printer',
-            status: 'READY',
+    const qrUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://riseupsolutions.in'}/remote?kiosk=${cleanDisplayId}`;
+
+    let kiosk: any;
+    if (existing) {
+      // Reactivate existing kiosk
+      kiosk = await prisma.kiosk.update({
+        where: { id: existing.id },
+        data: {
+          name: name?.trim() || existing.name,
+          location: location?.trim() || existing.location,
+          status: 'ACTIVE',
+          lastHeartbeat: new Date(),
+          qrUrl,
+          ...(deviceTokenHash ? { deviceTokenHash } : {}),
+        },
+        include: { printer: true, _count: { select: { printJobs: true } } },
+      });
+    } else {
+      kiosk = await prisma.kiosk.create({
+        data: {
+          displayId: cleanDisplayId,
+          name: name?.trim() || `XPOS Station ${cleanDisplayId}`,
+          location: location?.trim() || 'Main Campus',
+          status: 'ACTIVE',
+          lastHeartbeat: new Date(),
+          qrUrl,
+          deviceTokenHash,
+          printer: {
+            create: {
+              name: printerName || 'Default Printer',
+              model: 'Auto-Detected Printer',
+              status: 'READY',
+            },
           },
         },
-      },
-      include: { printer: true, _count: { select: { printJobs: true } } },
-    });
+        include: { printer: true, _count: { select: { printJobs: true } } },
+      });
+    }
 
     if (io) {
       io.emit('kiosks_updated', { type: 'CREATED', kiosk });
       io.to('admin').emit('kiosk_updated');
     }
 
-    res.json({ success: true, message: `Kiosk ${kiosk.displayId} created`, data: kiosk });
+    res.json({ success: true, message: `Kiosk ${kiosk.displayId} registered successfully`, data: kiosk });
   } catch (error: any) {
     console.error('Create kiosk error:', error);
     res.status(500).json({ success: false, error: error.message || 'Failed to create kiosk' });

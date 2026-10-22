@@ -579,6 +579,9 @@ export default function KioskApp() {
 
   // ── Verify Code & Direct Print to Physical Printer (Real-Time) ──
   const verifyAndPrintCode = async (fullCode: string) => {
+    const cleanCode = (fullCode || '').trim();
+    if (!cleanCode) return;
+
     setIsVerifying(true);
     setError('');
 
@@ -587,7 +590,7 @@ export default function KioskApp() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          code: fullCode,
+          code: cleanCode,
           kioskId,
         }),
       });

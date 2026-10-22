@@ -189,11 +189,48 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 // ── Start ──
 const PORT = parseInt(process.env.API_PORT || '4000');
 
+async function ensureDefaultKiosk(prisma: any) {
+  try {
+    const kioskCount = await prisma.kiosk.count();
+    if (kioskCount === 0) {
+      console.log('🌱 No kiosks found in database. Seeding default kiosk XPOS-001...');
+      await prisma.kiosk.create({
+        data: {
+          displayId: 'XPOS-001',
+          name: 'Print Station XPOS-001',
+          location: 'Central Campus Hub',
+          status: 'ACTIVE',
+          lastHeartbeat: new Date(),
+          qrUrl: `${process.env.NEXT_PUBLIC_APP_URL || 'https://riseupsolutions.in'}/remote?kiosk=XPOS-001`,
+          printer: {
+            create: {
+              name: 'Auto-Detected Printer',
+              model: 'Hardware Printer Engine',
+              status: 'READY',
+            },
+          },
+        },
+      });
+      console.log('✅ Default kiosk XPOS-001 seeded successfully');
+    } else {
+      await prisma.kiosk.updateMany({
+        where: { displayId: 'XPOS-001' },
+        data: { status: 'ACTIVE', lastHeartbeat: new Date() },
+      }).catch(() => {});
+    }
+  } catch (err) {
+    console.warn('Default kiosk seed check notice:', err);
+  }
+}
+
 async function start() {
   try {
     // Initialize storage bucket
     await storage.initialize();
     console.log('📦 Storage initialized');
+
+    // Auto-seed default kiosk if database is fresh
+    await ensureDefaultKiosk(prisma);
 
     // Setup WebSocket handlers
     setupWebSocket(io, prisma);

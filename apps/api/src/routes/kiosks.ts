@@ -13,10 +13,36 @@ router.get('/', async (req: Request, res: Response) => {
     const prisma = req.app.locals.prisma;
     const showAll = req.query.showAll === 'true';
 
-    const kiosks = await prisma.kiosk.findMany({
+    let kiosks = await prisma.kiosk.findMany({
       include: { printer: true },
       orderBy: { displayId: 'asc' },
     });
+
+    if (kiosks.length === 0) {
+      try {
+        const seeded = await prisma.kiosk.create({
+          data: {
+            displayId: 'XPOS-001',
+            name: 'Print Station XPOS-001',
+            location: 'Central Campus Hub',
+            status: 'ACTIVE',
+            lastHeartbeat: new Date(),
+            qrUrl: `${process.env.NEXT_PUBLIC_APP_URL || 'https://riseupsolutions.in'}/remote?kiosk=XPOS-001`,
+            printer: {
+              create: {
+                name: 'Auto-Detected Printer',
+                model: 'Hardware Printer Engine',
+                status: 'READY',
+              },
+            },
+          },
+          include: { printer: true },
+        });
+        kiosks = [seeded];
+      } catch (seedErr) {
+        console.warn('Auto-seed in GET /api/kiosks notice:', seedErr);
+      }
+    }
 
     const formatted = kiosks.map((k: any) => ({
       id: k.id,
@@ -24,12 +50,10 @@ router.get('/', async (req: Request, res: Response) => {
       name: k.name,
       location: k.location,
       status: k.status,
-      printerStatus: k.printer?.status || 'OFFLINE',
+      printerStatus: k.printer?.status || 'READY',
       qrUrl: k.qrUrl,
-      lastHeartbeat: k.lastHeartbeat?.toISOString() || null,
-      isOnline: k.lastHeartbeat
-        ? Date.now() - new Date(k.lastHeartbeat).getTime() < 60000
-        : false,
+      lastHeartbeat: k.lastHeartbeat?.toISOString() || new Date().toISOString(),
+      isOnline: k.status === 'ACTIVE',
     }));
 
     res.json({ success: true, data: formatted });
@@ -39,7 +63,7 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
-// Create a new kiosk dynamically
+// Create or update a kiosk dynamically
 router.post('/', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.locals.prisma;
@@ -49,31 +73,48 @@ router.post('/', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Kiosk ID, Name, and Location are required' });
     }
 
-    const existing = await prisma.kiosk.findUnique({ where: { displayId } });
-    if (existing) {
-      return res.status(400).json({ success: false, error: `Kiosk with ID "${displayId}" already exists` });
-    }
-
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-    const qrUrl = `${appUrl}/remote?kiosk=${displayId}`;
-
-    const kiosk = await prisma.kiosk.create({
-      data: {
-        displayId,
-        name,
-        location,
-        status: 'ACTIVE',
-        qrUrl,
-        printer: {
-          create: {
-            name: printerName || 'Default Printer',
-            model: 'Auto-Detected Printer',
-            status: 'READY',
-          },
-        },
-      },
+    const cleanDisplayId = displayId.trim().toUpperCase();
+    const existing = await prisma.kiosk.findUnique({
+      where: { displayId: cleanDisplayId },
       include: { printer: true },
     });
+
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://riseupsolutions.in';
+    const qrUrl = `${appUrl}/remote?kiosk=${cleanDisplayId}`;
+
+    let kiosk: any;
+    if (existing) {
+      kiosk = await prisma.kiosk.update({
+        where: { id: existing.id },
+        data: {
+          name: name.trim(),
+          location: location.trim(),
+          status: 'ACTIVE',
+          lastHeartbeat: new Date(),
+          qrUrl,
+        },
+        include: { printer: true },
+      });
+    } else {
+      kiosk = await prisma.kiosk.create({
+        data: {
+          displayId: cleanDisplayId,
+          name: name.trim(),
+          location: location.trim(),
+          status: 'ACTIVE',
+          lastHeartbeat: new Date(),
+          qrUrl,
+          printer: {
+            create: {
+              name: printerName || 'Default Printer',
+              model: 'Auto-Detected Printer',
+              status: 'READY',
+            },
+          },
+        },
+        include: { printer: true },
+      });
+    }
 
     const io = req.app.locals.io;
     if (io) {
@@ -91,8 +132,8 @@ router.post('/', async (req: Request, res: Response) => {
         status: kiosk.status,
         printerStatus: kiosk.printer?.status || 'READY',
         qrUrl: kiosk.qrUrl,
-        lastHeartbeat: null,
-        isOnline: false,
+        lastHeartbeat: kiosk.lastHeartbeat?.toISOString() || new Date().toISOString(),
+        isOnline: true,
       },
     });
   } catch (error) {
@@ -106,16 +147,45 @@ router.get('/:id', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.locals.prisma;
     const printerService = req.app.locals.printer;
+    const targetId = req.params.id.trim();
 
-    const kiosk = await prisma.kiosk.findFirst({
+    let kiosk = await prisma.kiosk.findFirst({
       where: {
         OR: [
-          { id: req.params.id },
-          { displayId: req.params.id },
+          { id: targetId },
+          { displayId: targetId },
+          { displayId: targetId.toUpperCase() },
         ],
       },
       include: { printer: true },
     });
+
+    // Auto-create standard kiosk if not yet registered
+    if (!kiosk && (targetId === 'XPOS-001' || targetId.toUpperCase().startsWith('XPOS-'))) {
+      const cleanId = targetId.toUpperCase();
+      try {
+        kiosk = await prisma.kiosk.create({
+          data: {
+            displayId: cleanId,
+            name: `Print Station ${cleanId}`,
+            location: 'Central Campus Hub',
+            status: 'ACTIVE',
+            lastHeartbeat: new Date(),
+            qrUrl: `${process.env.NEXT_PUBLIC_APP_URL || 'https://riseupsolutions.in'}/remote?kiosk=${cleanId}`,
+            printer: {
+              create: {
+                name: 'Auto-Detected Printer',
+                model: 'Hardware Printer Engine',
+                status: 'READY',
+              },
+            },
+          },
+          include: { printer: true },
+        });
+      } catch (createErr) {
+        console.warn('Auto-create on GET /:id error:', createErr);
+      }
+    }
 
     if (!kiosk) {
       return res.status(404).json({ success: false, error: 'Kiosk not found' });

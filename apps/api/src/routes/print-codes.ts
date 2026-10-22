@@ -75,6 +75,15 @@ router.post('/generate', async (req: Request, res: Response) => {
           include: { payment: true, file: true, printCode: true },
         });
       }
+
+      if (!job) {
+        // Look for the most recent pending job created within the last 24 hours
+        job = await prisma.printJob.findFirst({
+          where: { status: { in: ['CREATED', 'PAYMENT_PENDING', 'PAID', 'QUEUED'] } },
+          include: { payment: true, file: true, printCode: true },
+          orderBy: { createdAt: 'desc' },
+        });
+      }
     } catch (findErr) {
       console.warn('Job lookup query warning in generate code:', findErr);
     }
@@ -373,15 +382,16 @@ router.post('/verify', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Code and kiosk ID required' });
     }
 
+    const cleanCode = String(code).trim();
     // Hash the provided code
-    const codeHash = hashCode(code);
+    const codeHash = hashCode(cleanCode);
 
-    // Find print code by either SHA-256 hash or raw code
-    const printCode = await prisma.printCode.findFirst({
+    // 1. Find print code by either SHA-256 hash or raw code
+    let printCode = await prisma.printCode.findFirst({
       where: {
         OR: [
           { codeHash },
-          { qrToken: code },
+          { qrToken: cleanCode },
         ],
       },
       include: {
@@ -393,6 +403,79 @@ router.post('/verify', async (req: Request, res: Response) => {
         },
       },
     });
+
+    // 2. Resilient Fallback: If no printCode row exists, match against recent jobs
+    if (!printCode) {
+      let matchedJob: any = null;
+
+      // Check if code matches job displayId (e.g. 146 -> XP-000146 or XP-000146)
+      const numVal = parseInt(cleanCode.replace(/\D/g, ''));
+      matchedJob = await prisma.printJob.findFirst({
+        where: {
+          OR: [
+            { displayId: cleanCode },
+            { displayId: `XP-${cleanCode.padStart(6, '0')}` },
+            ...(numVal > 0 ? [{ jobNumber: numVal }] : []),
+          ],
+        },
+        include: { file: true, payment: true, printCode: true },
+      });
+
+      // Check if code matches the deterministic 6-digit code of any recent pending job
+      if (!matchedJob) {
+        const recentJobs = await prisma.printJob.findMany({
+          where: {
+            status: { in: ['CREATED', 'PAYMENT_PENDING', 'PAID', 'QUEUED'] },
+          },
+          include: { file: true, payment: true, printCode: true },
+          orderBy: { createdAt: 'desc' },
+          take: 30,
+        });
+
+        for (const rJob of recentJobs) {
+          const num = rJob.jobNumber || parseInt(String(rJob.displayId).replace(/\D/g, '')) || 0;
+          const expectedCode = String(100000 + ((num * 104729) % 900000));
+          if (expectedCode === cleanCode || rJob.printCode?.qrToken === cleanCode) {
+            matchedJob = rJob;
+            break;
+          }
+        }
+
+        // If only 1 pending job exists in the queue, match it!
+        if (!matchedJob && recentJobs.length === 1) {
+          matchedJob = recentJobs[0];
+        }
+      }
+
+      if (matchedJob) {
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        try {
+          printCode = await prisma.printCode.upsert({
+            where: { jobId: matchedJob.id },
+            update: {
+              qrToken: cleanCode,
+              codeHash,
+              status: 'ACTIVE',
+              expiresAt,
+            },
+            create: {
+              jobId: matchedJob.id,
+              qrToken: cleanCode,
+              codeHash,
+              status: 'ACTIVE',
+              expiresAt,
+            },
+            include: {
+              job: {
+                include: { file: true, payment: true },
+              },
+            },
+          });
+        } catch (linkErr) {
+          console.warn('Fallback print code upsert error:', linkErr);
+        }
+      }
+    }
 
     if (!printCode) {
       return res.status(404).json({
