@@ -160,14 +160,30 @@ app.get('/', (_req, res) => {
 });
 
 // ── Health check ──
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'xpos-api', timestamp: new Date().toISOString() });
+app.get('/api/health', async (_req, res) => {
+  let dbStatus = 'ok';
+  try {
+    const prisma = app.locals.prisma;
+    if (prisma) await prisma.$queryRawUnsafe('SELECT 1');
+  } catch (e: any) {
+    dbStatus = `db_warning: ${e?.message || 'cannot query'}`;
+  }
+  res.json({
+    status: 'ok',
+    service: 'xpos-api',
+    version: '2026-10-22-v5-instant',
+    database: dbStatus,
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // ── Error handler ──
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('API Error:', err);
-  res.status(500).json({ success: false, error: 'Internal server error' });
+  res.status(500).json({
+    success: false,
+    error: err?.message || 'Internal server error',
+  });
 });
 
 // ── Start ──

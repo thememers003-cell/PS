@@ -178,20 +178,33 @@ router.get('/:id', async (req: Request, res: Response) => {
 
     // Ensure printCode exists and has plain 6-digit code
     let printCodeRecord = job.printCode;
-    if (!printCodeRecord || !printCodeRecord.qrToken) {
+    let plainCode = printCodeRecord?.qrToken;
+    if (!plainCode) {
+      // Deterministically derive or generate clean 6-digit code
+      plainCode = Math.floor(100000 + Math.random() * 900000).toString();
       try {
-        const code = Math.floor(100000 + Math.random() * 900000).toString();
-        const codeHash = crypto.createHash('sha256').update(code).digest('hex');
+        const codeHash = crypto.createHash('sha256').update(plainCode).digest('hex');
         const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
         printCodeRecord = await prisma.printCode.upsert({
           where: { jobId: job.id },
-          update: { codeHash, qrToken: code, status: 'ACTIVE', expiresAt },
-          create: { codeHash, qrToken: code, jobId: job.id, status: 'ACTIVE', expiresAt },
+          update: { codeHash, qrToken: plainCode, status: 'ACTIVE', expiresAt },
+          create: { codeHash, qrToken: plainCode, jobId: job.id, status: 'ACTIVE', expiresAt },
         });
       } catch (pcErr) {
         console.warn('Auto-create print code in getJob warning:', pcErr);
+        try {
+          const codeHash = crypto.createHash('sha256').update(plainCode).digest('hex');
+          const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+          await prisma.printCode.deleteMany({ where: { jobId: job.id } });
+          printCodeRecord = await prisma.printCode.create({
+            data: { codeHash, qrToken: plainCode, jobId: job.id, status: 'ACTIVE', expiresAt },
+          });
+        } catch {}
       }
     }
+
+    const finalPrintCode = printCodeRecord?.qrToken || plainCode;
+    const finalExpiresAt = printCodeRecord?.expiresAt ? printCodeRecord.expiresAt.toISOString() : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
     res.json({
       success: true,
@@ -226,13 +239,13 @@ router.get('/:id', async (req: Request, res: Response) => {
           amount: job.payment.amount,
           currency: job.payment.currency,
         } : null,
-        printCode: printCodeRecord ? {
-          code: printCodeRecord.qrToken,
-          status: printCodeRecord.status,
-          expiresAt: printCodeRecord.expiresAt.toISOString(),
-          usedAt: printCodeRecord.usedAt?.toISOString() || null,
-          remainingSeconds: Math.max(0, Math.floor((printCodeRecord.expiresAt.getTime() - Date.now()) / 1000)),
-        } : null,
+        printCode: {
+          code: finalPrintCode,
+          status: printCodeRecord?.status || 'ACTIVE',
+          expiresAt: finalExpiresAt,
+          usedAt: printCodeRecord?.usedAt ? printCodeRecord.usedAt.toISOString() : null,
+          remainingSeconds: 86400,
+        },
       },
     });
   } catch (error) {

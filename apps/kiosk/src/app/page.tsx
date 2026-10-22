@@ -33,16 +33,22 @@ import { triggerBrowserPrint } from '../lib/browser-print';
 
 function getApiUrl(): string {
   if (typeof window !== 'undefined') {
-    const hostname = window.location.hostname;
-    if (hostname === 'localhost' || hostname === '127.0.0.1') {
-      return 'http://localhost:4000';
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('api') === 'cloud' || params.get('cloud') === 'true') {
+      return 'https://xpos-printing-cloud.onrender.com';
     }
+    const saved = localStorage.getItem('xpos_api_url');
+    if (saved) return saved;
+
+    const hostname = window.location.hostname;
     if (hostname.includes('loca.lt')) {
       return 'https://xpos-api-cloud.loca.lt';
     }
-    if (/^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(hostname)) {
-      return `http://${hostname}:4000`;
+    // If running on localhost and local port 4000 is desired, can pass ?api=local
+    if (params.get('api') === 'local') {
+      return 'http://localhost:4000';
     }
+    // Default to the central live Render Cloud API so Kiosk and Mobile Customer share the exact same database and WebSocket rooms
     return process.env.NEXT_PUBLIC_API_URL || 'https://xpos-printing-cloud.onrender.com';
   }
   return process.env.NEXT_PUBLIC_API_URL || 'https://xpos-printing-cloud.onrender.com';
@@ -256,7 +262,14 @@ export default function KioskApp() {
 
   // ── WebSocket connection ──
   useEffect(() => {
-    const socket = io(getApiUrl(), { transports: ['websocket', 'polling'] });
+    const socket = io(getApiUrl(), {
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 10000,
+    });
     socketRef.current = socket;
 
     socket.on('connect', () => {
@@ -267,6 +280,11 @@ export default function KioskApp() {
 
     socket.on('disconnect', () => {
       console.log('❌ Kiosk disconnected from XPOS Cloud');
+      setIsConnected(false);
+    });
+
+    socket.on('connect_error', (err) => {
+      console.warn('⚠️ Kiosk socket connect warning:', err?.message);
       setIsConnected(false);
     });
 
