@@ -196,30 +196,37 @@ router.get('/jobs', async (req: Request, res: Response) => {
 
     // Ensure all jobs have a valid 6-digit release code so the table never displays None
     for (const j of jobs) {
-      if (!j.printCode) {
-        try {
-          const num = j.jobNumber || parseInt(String(j.displayId).replace(/\D/g, '')) || 100;
-          const genCode = String(100000 + ((num * 104729) % 900000));
-          const codeHash = crypto.createHash('sha256').update(genCode).digest('hex');
-          const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      const num = j.jobNumber || parseInt(String(j.displayId).replace(/\D/g, '')) || 100;
+      const expectedCode = String(100000 + ((num * 104729) % 900000));
 
-          const newCodeRecord = await prisma.printCode.upsert({
-            where: { jobId: j.id },
-            update: {
-              qrToken: genCode,
-              codeHash,
-              status: 'ACTIVE',
-              expiresAt,
-            },
-            create: {
-              jobId: j.id,
-              qrToken: genCode,
-              codeHash,
-              status: 'ACTIVE',
-              expiresAt,
-            },
-          });
-          j.printCode = newCodeRecord;
+      if (!j.printCode || !j.printCode.qrToken) {
+        try {
+          let existing = await prisma.printCode.findUnique({ where: { jobId: j.id } });
+          if (!existing) {
+            let code = expectedCode;
+            let codeHash = crypto.createHash('sha256').update(code).digest('hex');
+            
+            // Check collision
+            const collision = await prisma.printCode.findFirst({
+              where: { OR: [{ codeHash }, { qrToken: code }], NOT: { jobId: j.id } },
+            });
+            if (collision) {
+              code = String(100000 + Math.floor(Math.random() * 900000));
+              codeHash = crypto.createHash('sha256').update(code).digest('hex');
+            }
+
+            const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+            existing = await prisma.printCode.create({
+              data: {
+                jobId: j.id,
+                qrToken: code,
+                codeHash,
+                status: 'ACTIVE',
+                expiresAt,
+              },
+            });
+          }
+          j.printCode = existing;
         } catch (codeGenErr) {
           console.warn('Auto-generate code for existing job warning:', codeGenErr);
         }
@@ -229,31 +236,38 @@ router.get('/jobs', async (req: Request, res: Response) => {
     res.json({
       success: true,
       data: {
-        jobs: jobs.map((j: any) => ({
-          id: j.id,
-          displayId: j.displayId,
-          status: j.status,
-          printMethod: j.printMethod,
-          colorMode: j.colorMode,
-          copies: j.copies,
-          totalPages: j.totalPages,
-          totalPrice: j.totalPrice,
-          sides: j.sides,
-          printCode: j.printCode?.qrToken || null,
-          printCodeStatus: j.printCode?.status || null,
-          printCodeExpiresAt: j.printCode?.expiresAt?.toISOString() || null,
-          fileName: j.file?.originalName,
-          fileSize: j.file?.sizeBytes,
-          kioskId: j.kiosk?.id || null,
-          kioskDisplayId: j.kiosk?.displayId || null,
-          kioskName: j.kiosk?.displayId || j.kiosk?.name || null,
-          kioskLocation: j.kiosk?.location || null,
-          paymentStatus: j.payment?.status,
-          paymentAmount: j.payment?.amount,
-          paymentOrderId: j.payment?.orderId,
-          createdAt: j.createdAt.toISOString(),
-          completedAt: j.completedAt?.toISOString(),
-        })),
+        jobs: jobs.map((j: any) => {
+          const num = j.jobNumber || parseInt(String(j.displayId).replace(/\D/g, '')) || 100;
+          const fallbackCode = String(100000 + ((num * 104729) % 900000));
+          const finalCode = j.printCode?.qrToken || fallbackCode;
+          const expiresAtStr = j.printCode?.expiresAt?.toISOString() || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+          return {
+            id: j.id,
+            displayId: j.displayId,
+            status: j.status,
+            printMethod: j.printMethod,
+            colorMode: j.colorMode,
+            copies: j.copies,
+            totalPages: j.totalPages,
+            totalPrice: j.totalPrice,
+            sides: j.sides,
+            printCode: finalCode,
+            printCodeStatus: j.printCode?.status || 'ACTIVE',
+            printCodeExpiresAt: expiresAtStr,
+            fileName: j.file?.originalName,
+            fileSize: j.file?.sizeBytes,
+            kioskId: j.kiosk?.id || null,
+            kioskDisplayId: j.kiosk?.displayId || null,
+            kioskName: j.kiosk?.displayId || j.kiosk?.name || null,
+            kioskLocation: j.kiosk?.location || null,
+            paymentStatus: j.payment?.status,
+            paymentAmount: j.payment?.amount,
+            paymentOrderId: j.payment?.orderId,
+            createdAt: j.createdAt.toISOString(),
+            completedAt: j.completedAt?.toISOString(),
+          };
+        }),
         pagination: {
           total,
           page: parseInt(page as string),

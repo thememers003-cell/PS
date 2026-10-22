@@ -33,21 +33,27 @@ import { triggerBrowserPrint } from '../lib/browser-print';
 
 function getApiUrl(): string {
   if (typeof window !== 'undefined') {
+    const hostname = window.location.hostname;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return 'http://localhost:4000';
+    }
+
     const params = new URLSearchParams(window.location.search);
     if (params.get('api') === 'local') {
       return 'http://localhost:4000';
     }
-    const saved = localStorage.getItem('xpos_api_url');
-    if (saved) return saved;
 
-    const hostname = window.location.hostname;
+    const saved = localStorage.getItem('xpos_api_url');
+    if (saved && saved.startsWith('http') && !saved.includes('localhost')) {
+      return saved;
+    }
+
     if (hostname.includes('loca.lt')) {
       return 'https://xpos-api-cloud.loca.lt';
     }
-    // Direct cloud connection to ensure Kiosk and Customer Phone communicate over the same server
-    return 'https://xpos-printing-cloud.onrender.com';
+    return process.env.NEXT_PUBLIC_API_URL || 'https://xpos-printing-cloud.onrender.com';
   }
-  return 'https://xpos-printing-cloud.onrender.com';
+  return process.env.NEXT_PUBLIC_API_URL || 'https://xpos-printing-cloud.onrender.com';
 }
 
 function getAppUrl(): string {
