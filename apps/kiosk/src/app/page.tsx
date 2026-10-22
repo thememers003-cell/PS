@@ -33,21 +33,12 @@ import { triggerBrowserPrint } from '../lib/browser-print';
 
 function getApiUrl(): string {
   if (typeof window !== 'undefined') {
-    const hostname = window.location.hostname;
-    if (hostname === 'localhost' || hostname === '127.0.0.1') {
-      return 'http://localhost:4000';
-    }
-
     const params = new URLSearchParams(window.location.search);
     if (params.get('api') === 'local') {
       return 'http://localhost:4000';
     }
 
-    const saved = localStorage.getItem('xpos_api_url');
-    if (saved && saved.startsWith('http') && !saved.includes('localhost')) {
-      return saved;
-    }
-
+    const hostname = window.location.hostname;
     if (hostname.includes('loca.lt')) {
       return 'https://xpos-api-cloud.loca.lt';
     }
