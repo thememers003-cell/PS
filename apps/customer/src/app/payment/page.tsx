@@ -45,6 +45,10 @@ function PaymentContent() {
       if (!jobId) return;
 
       try {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('xpos_last_job_id', jobId);
+          if (displayId) localStorage.setItem('xpos_last_display_id', displayId);
+        }
         setStatus('loading');
         setError(null);
 

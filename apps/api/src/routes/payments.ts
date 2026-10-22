@@ -372,20 +372,40 @@ const handleIncomingWebhook = async (req: Request, res: Response) => {
     }
 
     // Resolve order identifier from payload
-    const orderId = processed?.orderId || payload.orderId || payload.order_id || payload.tr || payload.transactionReferenceId || payload.data?.orderId;
-    const providerRef = processed?.providerRef || payload.rrn || payload.utr || payload.bankRefNumber || payload.paymentId || payload.id || `UPI_${Date.now()}`;
-    const status = (payload.status || payload.event || payload.payment_status || 'PAID').toUpperCase();
+    const orderId = processed?.orderId ||
+      payload.orderId ||
+      payload.order_id ||
+      payload.merchantOrderId ||
+      payload.merchantTransactionId ||
+      payload.data?.merchantOrderId ||
+      payload.data?.merchantTransactionId ||
+      payload.data?.orderId ||
+      payload.tr ||
+      payload.transactionReferenceId;
+
+    const providerRef = processed?.providerRef ||
+      payload.rrn ||
+      payload.utr ||
+      payload.bankRefNumber ||
+      payload.paymentId ||
+      payload.id ||
+      payload.data?.transactionId ||
+      payload.data?.orderId ||
+      `UPI_${Date.now()}`;
+
+    const status = (processed?.state || payload.data?.state || payload.status || payload.event || payload.payment_status || 'PAID').toUpperCase();
 
     if (!orderId) {
       return res.status(400).json({ success: false, error: 'Order ID or transaction reference missing' });
     }
 
-    // Find payment record by providerOrderId or jobId
+    // Find payment record by providerOrderId or jobId or displayId
     const paymentRecord = await prisma.payment.findFirst({
       where: {
         OR: [
           { providerOrderId: orderId },
           { jobId: orderId },
+          { job: { displayId: orderId } },
         ],
       },
       include: { job: true },
@@ -676,6 +696,16 @@ const handleNotificationWebhook = async (req: Request, res: Response) => {
   }
 };
 
+// ── Webhook Endpoints (PhonePe / Google Pay / Notification Bridge) ──
+router.get('/webhook/427796ad-2a0d-47ba-bae2-b30112dafb9a', (_req: Request, res: Response) => {
+  res.json({ success: true, message: 'PhonePe webhook verified and active', webhookId: '427796ad-2a0d-47ba-bae2-b30112dafb9a' });
+});
+router.get('/webhook/:token?', (_req: Request, res: Response) => {
+  res.json({ success: true, message: 'Webhook endpoint active' });
+});
+
+router.post('/webhook/427796ad-2a0d-47ba-bae2-b30112dafb9a', handleIncomingWebhook);
+router.post('/webhook/:token', handleIncomingWebhook);
 router.post('/webhook', handleIncomingWebhook);
 router.post('/webhook/gpay', handleIncomingWebhook);
 router.post('/webhook/notification', handleNotificationWebhook);

@@ -1,6 +1,14 @@
 import { NextResponse } from 'next/server';
 
-const RENDER_BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || 'https://xpos-printing-cloud.onrender.com';
+const RENDER_BACKEND_URL = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'https://xpos-printing-cloud.onrender.com';
+
+export async function GET() {
+  return NextResponse.json({
+    success: true,
+    message: 'Webhook proxy endpoint active',
+    webhookId: '427796ad-2a0d-47ba-bae2-b30112dafb9a',
+  });
+}
 
 export async function POST(req: Request) {
   try {

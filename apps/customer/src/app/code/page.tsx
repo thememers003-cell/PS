@@ -334,14 +334,24 @@ function CodeContent() {
     };
   }, [showScanner, handleQrScanned]);
 
-  // ── Load directly from API (Zero cross-job caching bugs) ──
+  // ── Load directly from API (Guaranteed code issuance on /code redirect) ──
   useEffect(() => {
-    if (!jobId && !displayId) {
+    let effectiveJobId = jobId;
+    let effectiveDisplayId = displayId;
+
+    if (!effectiveJobId && typeof window !== 'undefined') {
+      effectiveJobId = localStorage.getItem('xpos_last_job_id') || localStorage.getItem('xpos_active_job_id');
+    }
+    if (!effectiveDisplayId && typeof window !== 'undefined') {
+      effectiveDisplayId = localStorage.getItem('xpos_last_display_id') || localStorage.getItem('xpos_active_display_id');
+    }
+
+    if (!effectiveJobId && !effectiveDisplayId && !orderIdParam) {
       setLoading(false);
       return;
     }
 
-    const cacheKey = jobId || displayId || 'active';
+    const cacheKey = effectiveJobId || effectiveDisplayId || orderIdParam || 'active';
     try {
       const cached = localStorage.getItem(`xpos_code_${cacheKey}`);
       if (cached) {
@@ -358,10 +368,20 @@ function CodeContent() {
 
     async function loadCode() {
       try {
-        let activeJobId = jobId;
+        let activeJobId = effectiveJobId;
 
-        if (!activeJobId && displayId) {
-          const jobLookup = await getJob(displayId);
+        if (!activeJobId && effectiveDisplayId) {
+          const jobLookup = await getJob(effectiveDisplayId);
+          if (jobLookup.success && jobLookup.data?.id) {
+            activeJobId = jobLookup.data.id;
+            setResolvedJobId(activeJobId);
+            setJobInfo(jobLookup.data);
+            setJobStatus(jobLookup.data.status);
+          }
+        }
+
+        if (!activeJobId && orderIdParam) {
+          const jobLookup = await getJob(orderIdParam);
           if (jobLookup.success && jobLookup.data?.id) {
             activeJobId = jobLookup.data.id;
             setResolvedJobId(activeJobId);

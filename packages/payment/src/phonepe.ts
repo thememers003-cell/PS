@@ -41,7 +41,7 @@ export class PhonePeProvider implements PaymentProvider {
       env: (process.env.PHONEPE_ENV as 'UAT' | 'PROD') || 'PROD',
       vpa: process.env.PHONEPE_MERCHANT_VPA || 'PhonePe PG (M236NFVVSAXD2)',
       merchantName: process.env.PHONEPE_MERCHANT_NAME || 'Print Bro',
-      callbackUrl: process.env.PHONEPE_CALLBACK_URL || `${process.env.API_URL || 'http://localhost:4000'}/api/payments/webhook`,
+      callbackUrl: process.env.PHONEPE_CALLBACK_URL || `${process.env.API_URL || 'http://localhost:4000'}/api/payments/webhook/427796ad-2a0d-47ba-bae2-b30112dafb9a`,
       ...customConfig,
     };
   }

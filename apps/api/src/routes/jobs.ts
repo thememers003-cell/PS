@@ -157,7 +157,11 @@ router.get('/:id', async (req: Request, res: Response) => {
     const prisma = req.app.locals.prisma;
     const job = await prisma.printJob.findFirst({
       where: {
-        OR: [{ id: req.params.id }, { displayId: req.params.id }],
+        OR: [
+          { id: req.params.id },
+          { displayId: req.params.id },
+          { payment: { providerOrderId: req.params.id } },
+        ],
       },
       include: {
         file: true,
