@@ -310,8 +310,17 @@ function RemotePrintContent() {
       let activeSessionId = sessionId;
       if (!activeSessionId) {
         const sessionRes = await createSession(undefined, 'CODE');
-        activeSessionId = sessionRes.data?.id || `sess_${Date.now()}`;
-        setSessionId(activeSessionId);
+        if (sessionRes.success && sessionRes.data?.id) {
+          activeSessionId = sessionRes.data.id;
+          setSessionId(activeSessionId);
+        } else if (sessionRes.error) {
+          setError(sessionRes.error);
+          setUploading(false);
+          return;
+        } else {
+          activeSessionId = `sess_${Date.now()}`;
+          setSessionId(activeSessionId);
+        }
       }
 
       const res = await uploadFile(
@@ -448,8 +457,17 @@ function RemotePrintContent() {
       let activeSessionId = sessionId;
       if (!activeSessionId) {
         const sessionRes = await createSession(undefined, 'CODE');
-        activeSessionId = sessionRes.data?.id || `sess_${Date.now()}`;
-        setSessionId(activeSessionId);
+        if (sessionRes.success && sessionRes.data?.id) {
+          activeSessionId = sessionRes.data.id;
+          setSessionId(activeSessionId);
+        } else if (sessionRes.error) {
+          setError(sessionRes.error);
+          setLoading(false);
+          return;
+        } else {
+          activeSessionId = `sess_${Date.now()}`;
+          setSessionId(activeSessionId);
+        }
       }
 
       const totalAmount = calculateDynamicTotal();
