@@ -34,6 +34,7 @@ function hashCode(code: string): string {
 
 // Generate a print code after payment
 router.post('/generate', async (req: Request, res: Response) => {
+  const prisma = req.app.locals.prisma;
   try {
     const body = req.body || {};
     const jobId = body.jobId;
