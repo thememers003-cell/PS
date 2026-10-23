@@ -85,6 +85,7 @@ interface DashboardStats {
 interface PrintJob {
   id: string;
   displayId: string;
+  jobNumber?: number;
   status: string;
   printMethod: string;
   colorMode: string;

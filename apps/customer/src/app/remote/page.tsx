@@ -473,6 +473,16 @@ function RemotePrintContent() {
       const totalAmount = calculateDynamicTotal();
       const totalPagesCount = totalCalculatedPages * copies;
 
+      let effectivePageRange = pageRange.trim() || null;
+      if (!effectivePageRange && perFileSettings.length > 0) {
+        const customPages = perFileSettings
+          .filter((f) => f.selectedPages.length < f.pageCount)
+          .map((f) => f.selectedPages.join(','));
+        if (customPages.length > 0) {
+          effectivePageRange = customPages.join(',');
+        }
+      }
+
       const jobRes = await createJob({
         sessionId: activeSessionId,
         fileId: fileInfo.id,
@@ -483,7 +493,7 @@ function RemotePrintContent() {
         sides,
         orientation,
         copies,
-        pageRange: pageRange.trim() || null,
+        pageRange: effectivePageRange,
         totalPages: totalPagesCount,
         totalPrice: totalAmount,
       });
@@ -513,8 +523,8 @@ function RemotePrintContent() {
         } catch {}
       }
 
-      // Navigate to payment
-      const codeQuery = initialCode ? `&code=${initialCode}` : '';
+      // Navigate to payment with synchronized code parameters
+      const codeQuery = initialCode ? `&code=${initialCode}&printCode=${initialCode}` : '';
       router.push(`/payment?jobId=${jobRes.data.id}&displayId=${jobRes.data.displayId}&amount=${totalAmount}&method=CODE${codeQuery}`);
     } catch (err: any) {
       playKeySound('error');
