@@ -26,7 +26,14 @@ function PaymentContent() {
   const amount = searchParams.get('amount');
   const method = searchParams.get('method') || 'CODE';
   const initialCodeParam = searchParams.get('printCode') || searchParams.get('code');
-  const validInitialCode = (initialCodeParam && /^\d{6}$/.test(initialCodeParam)) ? initialCodeParam : null;
+  const [cachedCode, setCachedCode] = useState<string | null>(null);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('xpos_last_code');
+      if (stored && /^\d{6}$/.test(stored)) setCachedCode(stored);
+    }
+  }, []);
+  const validInitialCode = (initialCodeParam && /^\d{6}$/.test(initialCodeParam)) ? initialCodeParam : cachedCode;
 
   const [status, setStatus] = useState<'loading' | 'redirecting' | 'waiting' | 'checking' | 'success' | 'failed'>('loading');
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);

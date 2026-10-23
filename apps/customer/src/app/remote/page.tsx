@@ -490,6 +490,8 @@ function RemotePrintContent() {
           localStorage.setItem(`xpos_code_${jobRes.data.id}`, payload);
           localStorage.setItem(`xpos_code_${jobRes.data.displayId}`, payload);
           localStorage.setItem('xpos_last_code', initialCode);
+          localStorage.setItem('xpos_last_job_id', jobRes.data.id);
+          localStorage.setItem('xpos_last_display_id', jobRes.data.displayId);
         } catch {}
       }
 
