@@ -477,8 +477,25 @@ function RemotePrintContent() {
         return;
       }
 
+      const initialCode = jobRes.data.printCode?.code;
+      if (initialCode && typeof window !== 'undefined') {
+        const payload = JSON.stringify({
+          code: initialCode,
+          expiresAt: jobRes.data.printCode?.expiresAt || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+          jobId: jobRes.data.id,
+          displayId: jobRes.data.displayId,
+          savedAt: new Date().toISOString(),
+        });
+        try {
+          localStorage.setItem(`xpos_code_${jobRes.data.id}`, payload);
+          localStorage.setItem(`xpos_code_${jobRes.data.displayId}`, payload);
+          localStorage.setItem('xpos_last_code', initialCode);
+        } catch {}
+      }
+
       // Navigate to payment
-      router.push(`/payment?jobId=${jobRes.data.id}&displayId=${jobRes.data.displayId}&amount=${totalAmount}&method=CODE`);
+      const codeQuery = initialCode ? `&code=${initialCode}` : '';
+      router.push(`/payment?jobId=${jobRes.data.id}&displayId=${jobRes.data.displayId}&amount=${totalAmount}&method=CODE${codeQuery}`);
     } catch (err: any) {
       playKeySound('error');
       setError(err?.message || 'Failed to proceed to payment');

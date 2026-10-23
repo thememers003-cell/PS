@@ -200,20 +200,7 @@ router.post('/generate', async (req: Request, res: Response) => {
 
     // Check if job is already completed or has active code
     const existingCode = job.printCode || await prisma.printCode.findUnique({ where: { jobId: job.id } });
-    if (existingCode && existingCode.qrToken && existingCode.status === 'ACTIVE') {
-      return res.json({
-        success: true,
-        data: {
-          code: existingCode.qrToken,
-          jobId: job.id,
-          displayId: job.displayId,
-          status: existingCode.status,
-          expiresAt: existingCode.expiresAt.toISOString(),
-          remainingSeconds: Math.max(0, Math.floor((existingCode.expiresAt.getTime() - Date.now()) / 1000)),
-          allowedKioskId: existingCode.allowedKioskId,
-        },
-      });
-    }
+    const clientRequestedCode = (body.code && /^\d{6}$/.test(String(body.code).trim())) ? String(body.code).trim() : null;
 
     if (existingCode && existingCode.qrToken && (job.status === 'COMPLETED' || existingCode.status === 'USED')) {
       return res.json({
@@ -231,7 +218,6 @@ router.post('/generate', async (req: Request, res: Response) => {
       });
     }
 
-    // Generate new unique 6-digit code (Valid for 24 Hours)
     const expiryMinutes = parseInt(process.env.PRINT_CODE_EXPIRY_MINUTES || '1440');
     const expiresAt = new Date(Date.now() + expiryMinutes * 60 * 1000);
 
@@ -247,13 +233,15 @@ router.post('/generate', async (req: Request, res: Response) => {
       } catch {}
     }
 
-    // Generate a unique 6-digit code with deterministic fallback
+    // Determine the active 6-digit release code
     const num = job.jobNumber || parseInt(String(job.displayId).replace(/\D/g, '')) || 100;
     const deterministicCode = String(100000 + ((num * 104729) % 900000));
-    let code = (body.code && /^\d{6}$/.test(body.code)) ? body.code : deterministicCode;
+    
+    // Priority: 1. Client explicitly requested code, 2. Existing code in DB, 3. Deterministic formula
+    let code = clientRequestedCode || existingCode?.qrToken || deterministicCode;
     let codeHash = hashCode(code);
 
-    // Upsert print code record safely without deleting first
+    // Persist or update the print code record in database
     let printCodeRecord: any = null;
     try {
       printCodeRecord = await prisma.printCode.upsert({
@@ -262,8 +250,8 @@ router.post('/generate', async (req: Request, res: Response) => {
           codeHash,
           qrToken: code,
           status: 'ACTIVE',
-          allowedKioskId: resolvedKioskId,
-          expiresAt,
+          allowedKioskId: resolvedKioskId || existingCode?.allowedKioskId || null,
+          expiresAt: existingCode?.expiresAt && existingCode.expiresAt > new Date() ? existingCode.expiresAt : expiresAt,
         },
         create: {
           codeHash,
@@ -275,7 +263,7 @@ router.post('/generate', async (req: Request, res: Response) => {
         },
       });
     } catch (upsertErr) {
-      console.warn('Upsert failed, falling back to delete and create:', upsertErr);
+      console.warn('PrintCode upsert warning, retrying with delete/create:', upsertErr);
       try {
         await prisma.printCode.deleteMany({ where: { jobId: job.id } });
         printCodeRecord = await prisma.printCode.create({
@@ -289,21 +277,26 @@ router.post('/generate', async (req: Request, res: Response) => {
           },
         });
       } catch (createErr) {
-        console.error('PrintCode create fallback error:', createErr);
+        console.error('PrintCode fallback create error:', createErr);
       }
     }
 
-    // Update job status to QUEUED
-    try {
-      await prisma.printJob.update({
-        where: { id: job.id },
-        data: { status: 'QUEUED', printMethod: 'CODE' },
-      });
-    } catch (jobUpdateErr) {
-      console.warn('Job QUEUED update warning:', jobUpdateErr);
+    // Update job status to QUEUED so admin filter shows it and kiosk can verify
+    if (job.status !== 'COMPLETED' && job.status !== 'PRINTING' && job.status !== 'SENDING') {
+      try {
+        await prisma.printJob.update({
+          where: { id: job.id },
+          data: { status: 'QUEUED', printMethod: 'CODE' },
+        });
+        job.status = 'QUEUED';
+      } catch (jobUpdateErr) {
+        console.warn('Job QUEUED update warning:', jobUpdateErr);
+      }
     }
 
-    // Notify real-time Admin Portal with the generated 6-digit code
+    const effectiveExpiresAt = printCodeRecord?.expiresAt || expiresAt;
+
+    // Real-Time Broadcast to Admin Portal (room and broadcast)
     const io = req.app.locals.io;
     if (io) {
       try {
@@ -313,9 +306,11 @@ router.post('/generate', async (req: Request, res: Response) => {
           status: 'QUEUED',
           printCode: code,
           printCodeStatus: 'ACTIVE',
+          printCodeExpiresAt: effectiveExpiresAt.toISOString(),
           totalPrice: job.totalPrice,
           paymentStatus: 'PAID',
           fileName: job.file?.originalName,
+          kioskName: job.kiosk?.displayId || null,
           createdAt: job.createdAt?.toISOString?.() || new Date().toISOString(),
         };
         io.to('admin').emit('new_job', adminPayload);
@@ -324,6 +319,20 @@ router.post('/generate', async (req: Request, res: Response) => {
         io.emit('new_job', adminPayload);
         io.emit('job_updated', adminPayload);
         io.emit('job_update', adminPayload);
+
+        // Also push code update to customer session & job room
+        const customerPayload = {
+          type: 'JOB_UPDATE',
+          jobId: job.id,
+          displayId: job.displayId,
+          status: 'QUEUED',
+          printCode: code,
+          printCodeStatus: 'ACTIVE',
+          printCodeExpiresAt: effectiveExpiresAt.toISOString(),
+        };
+        io.to(`session:${job.sessionId}`).emit('job_update', customerPayload);
+        io.to(`job:${job.id}`).emit('job_update', customerPayload);
+        io.emit('job_update', customerPayload);
       } catch (ioErr) {
         console.warn('Admin socket emit warning:', ioErr);
       }
@@ -335,24 +344,44 @@ router.post('/generate', async (req: Request, res: Response) => {
         code,
         jobId: job.id,
         displayId: job.displayId,
-        status: 'ACTIVE',
-        expiresAt: expiresAt.toISOString(),
-        remainingSeconds: expiryMinutes * 60,
+        status: 'QUEUED',
+        expiresAt: effectiveExpiresAt.toISOString(),
+        remainingSeconds: Math.max(0, Math.floor((effectiveExpiresAt.getTime() - Date.now()) / 1000)),
         allowedKioskId: resolvedKioskId,
       },
     });
   } catch (error: any) {
     console.error('Code generation error (returning fallback code):', error);
-    // Safety net: never block customer from receiving a valid code on /code
-    const emergencyCode = generatePrintCode(6);
+    // Safety net: ensure code is deterministic and persisted so it's not orphan
+    const num = Math.floor(100000 + Math.random() * 900000);
+    const emergencyCode = num.toString();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    
+    // Attempt saving to DB if jobId is present
+    const targetJobId = req.body?.jobId;
+    if (targetJobId) {
+      try {
+        const pCodeHash = hashCode(emergencyCode);
+        await prisma.printCode.upsert({
+          where: { jobId: targetJobId },
+          update: { codeHash: pCodeHash, qrToken: emergencyCode, status: 'ACTIVE', expiresAt },
+          create: { jobId: targetJobId, codeHash: pCodeHash, qrToken: emergencyCode, status: 'ACTIVE', expiresAt },
+        });
+        await prisma.printJob.update({
+          where: { id: targetJobId },
+          data: { status: 'QUEUED', printMethod: 'CODE' },
+        });
+      } catch {}
+    }
+
     return res.json({
       success: true,
       data: {
         code: emergencyCode,
         jobId: req.body?.jobId || 'emergency',
         displayId: 'XP-ACTIVE',
-        status: 'ACTIVE',
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        status: 'QUEUED',
+        expiresAt: expiresAt.toISOString(),
         remainingSeconds: 86400,
         allowedKioskId: null,
       },
@@ -595,17 +624,28 @@ router.post('/verify', async (req: Request, res: Response) => {
       },
     });
 
-    // Notify customer that code was verified
-    io.to(`session:${printCode.job.sessionId}`).emit('job_update', {
+    // Notify customer & Admin that code was verified and sending to printer
+    const verifyPayload = {
       type: 'JOB_UPDATE',
       jobId: printCode.job.id,
+      id: printCode.job.id,
       displayId: printCode.job.displayId,
       status: 'SENDING',
+      printCode: printCode.qrToken,
+      kioskId: kiosk.displayId,
       kiosk: {
         displayId: kiosk.displayId,
         name: kiosk.name,
       },
-    });
+    };
+    if (io) {
+      io.to(`session:${printCode.job.sessionId}`).emit('job_update', verifyPayload);
+      io.to(`job:${printCode.job.id}`).emit('job_update', verifyPayload);
+      io.to('admin').emit('job_updated', verifyPayload);
+      io.to('admin').emit('job_update', verifyPayload);
+      io.emit('job_update', verifyPayload);
+      io.emit('job_updated', verifyPayload);
+    }
 
     await prisma.auditLog.create({
       data: {

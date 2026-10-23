@@ -35,11 +35,13 @@ function CodeContent() {
   const jobId = searchParams.get('jobId');
   const displayId = searchParams.get('displayId');
   const orderIdParam = searchParams.get('orderId') || searchParams.get('merchantOrderId') || searchParams.get('transactionId');
-  const phonepeStatus = searchParams.get('code') || searchParams.get('status') || searchParams.get('state');
+  const rawCodeParam = searchParams.get('printCode') || searchParams.get('code');
+  const incomingPrintCode = (rawCodeParam && /^\d{6}$/.test(rawCodeParam)) ? rawCodeParam : null;
+  const phonepeStatus = (!incomingPrintCode && rawCodeParam) ? rawCodeParam : (searchParams.get('status') || searchParams.get('state'));
   const pairKioskParam = searchParams.get('pairKiosk') || searchParams.get('kiosk');
   const pairTokenParam = searchParams.get('pairToken') || searchParams.get('token');
 
-  const [code, setCode] = useState<string | null>(null);
+  const [code, setCode] = useState<string | null>(incomingPrintCode);
   const [expiresAt, setExpiresAt] = useState<Date | null>(null);
   const [remaining, setRemaining] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -60,15 +62,17 @@ function CodeContent() {
         if (jobRes.success && jobRes.data?.printCode?.code) {
           setCode(jobRes.data.printCode.code);
           if (jobRes.data.printCode.expiresAt) setExpiresAt(new Date(jobRes.data.printCode.expiresAt));
+          setJobStatus('QUEUED');
           setError(null);
           setIsRetrying(false);
           return;
         }
 
-        const codeRes = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
+        const codeRes = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined, incomingPrintCode || undefined);
         if (codeRes.success && codeRes.data?.code) {
           setCode(codeRes.data.code);
           setExpiresAt(new Date(codeRes.data.expiresAt));
+          setJobStatus('QUEUED');
           setError(null);
         }
       }
@@ -351,7 +355,7 @@ function CodeContent() {
       effectiveDisplayId = localStorage.getItem('xpos_last_display_id') || localStorage.getItem('xpos_active_display_id');
     }
 
-    if (!effectiveJobId && !effectiveDisplayId && !orderIdParam) {
+    if (!effectiveJobId && !effectiveDisplayId && !orderIdParam && !incomingPrintCode) {
       setLoading(false);
       return;
     }
@@ -375,13 +379,14 @@ function CodeContent() {
       try {
         let activeJobId = effectiveJobId;
 
+        // 1. Resolve jobId if only displayId or orderIdParam was provided
         if (!activeJobId && effectiveDisplayId) {
           const jobLookup = await getJob(effectiveDisplayId);
           if (jobLookup.success && jobLookup.data?.id) {
             activeJobId = jobLookup.data.id;
             setResolvedJobId(activeJobId);
             setJobInfo(jobLookup.data);
-            setJobStatus(jobLookup.data.status);
+            if (jobLookup.data.status) setJobStatus(jobLookup.data.status);
           }
         }
 
@@ -391,7 +396,7 @@ function CodeContent() {
             activeJobId = jobLookup.data.id;
             setResolvedJobId(activeJobId);
             setJobInfo(jobLookup.data);
-            setJobStatus(jobLookup.data.status);
+            if (jobLookup.data.status) setJobStatus(jobLookup.data.status);
           }
         }
 
@@ -403,90 +408,72 @@ function CodeContent() {
 
         setResolvedJobId(activeJobId);
 
-        // 1. Try generating print code directly (with orderIdParam for instant zero-latency issuance)
-        let res = await generatePrintCode(activeJobId, undefined, orderIdParam || undefined);
+        // 2. Fetch authoritative job data from backend
+        let authoritativeCode: string | null = incomingPrintCode;
+        let authoritativeExpires: Date | null = null;
 
-        // 2. If code generation was not immediately returned, fetch getJob directly
-        if (!res.success || !res.data?.code) {
-          const directJob = await getJob(activeJobId, orderIdParam || undefined);
-          if (directJob.success && directJob.data?.printCode?.code) {
-            res = {
-              success: true,
-              data: {
-                code: directJob.data.printCode.code,
-                jobId: activeJobId,
-                displayId: directJob.data.displayId || displayId,
-                status: 'ACTIVE',
-                expiresAt: directJob.data.printCode.expiresAt || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-              } as any,
-            };
+        const jobRes = await getJob(activeJobId, orderIdParam || undefined);
+        if (jobRes.success && jobRes.data) {
+          setJobInfo(jobRes.data);
+          if (jobRes.data.status) setJobStatus(jobRes.data.status === 'CREATED' ? 'QUEUED' : jobRes.data.status);
+          if (jobRes.data.kiosk?.displayId) setPrintedKiosk(jobRes.data.kiosk.displayId);
+          if (jobRes.data.printCode?.code) {
+            authoritativeCode = jobRes.data.printCode.code;
+            if (jobRes.data.printCode.expiresAt) authoritativeExpires = new Date(jobRes.data.printCode.expiresAt);
           }
         }
 
-        if (res.success && res.data?.code) {
-          const verifiedCode = res.data.code;
-          const verifiedExpires = new Date(res.data.expiresAt || Date.now() + 24 * 60 * 60 * 1000);
+        // 3. Generate or sync print code on backend, ensuring QUEUED status and Admin broadcast
+        const res = await generatePrintCode(
+          activeJobId,
+          undefined,
+          orderIdParam || undefined,
+          authoritativeCode || undefined
+        );
 
-          setCode(verifiedCode);
-          setExpiresAt(verifiedExpires);
-          if (res.data.status) setJobStatus(res.data.status);
+        if (res.success && res.data?.code) {
+          const finalCode = res.data.code;
+          const finalExpires = new Date(res.data.expiresAt || Date.now() + 24 * 60 * 60 * 1000);
+
+          setCode(finalCode);
+          setExpiresAt(finalExpires);
+          setJobStatus('QUEUED');
           setError(null);
 
-          const jobRes = await getJob(activeJobId, orderIdParam || undefined);
-          const freshJobInfo = jobRes.success ? jobRes.data : null;
+          const freshJobRes = await getJob(activeJobId, orderIdParam || undefined);
+          const freshJobInfo = freshJobRes.success ? freshJobRes.data : jobInfo;
           if (freshJobInfo) {
             setJobInfo(freshJobInfo);
-            setJobStatus(freshJobInfo.status);
             if (freshJobInfo.kiosk?.displayId) setPrintedKiosk(freshJobInfo.kiosk.displayId);
           }
 
-          localStorage.setItem(`xpos_code_${cacheKey}`, JSON.stringify({
-            code: verifiedCode,
-            expiresAt: verifiedExpires.toISOString(),
+          const cachePayload = JSON.stringify({
+            code: finalCode,
+            expiresAt: finalExpires.toISOString(),
             jobId: activeJobId,
-            displayId: res.data.displayId || displayId,
+            displayId: res.data.displayId || displayId || effectiveDisplayId,
             jobInfo: freshJobInfo,
             savedAt: new Date().toISOString(),
-          }));
-        } else {
-          // Immediate Zero-Latency Code Fallback: Use deterministic code matching database & admin
-          const num = parseInt(String(displayId || effectiveDisplayId || activeJobId).replace(/\D/g, '')) || 100;
-          const generatedCode = String(100000 + ((num * 104729) % 900000));
-          const verifiedExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+          });
 
-          setCode(generatedCode);
-          setExpiresAt(verifiedExpires);
+          localStorage.setItem(`xpos_code_${cacheKey}`, cachePayload);
+          localStorage.setItem(`xpos_code_${activeJobId}`, cachePayload);
+          if (displayId) localStorage.setItem(`xpos_code_${displayId}`, cachePayload);
+        } else if (authoritativeCode) {
+          setCode(authoritativeCode);
+          if (authoritativeExpires) setExpiresAt(authoritativeExpires);
+          setJobStatus('QUEUED');
           setError(null);
-
-          // Asynchronously ensure database has this exact code
-          if (activeJobId) {
-            generatePrintCode(activeJobId, undefined, orderIdParam || undefined).catch(() => {});
-          }
-
-          localStorage.setItem(`xpos_code_${cacheKey}`, JSON.stringify({
-            code: generatedCode,
-            expiresAt: verifiedExpires.toISOString(),
-            jobId: activeJobId,
-            displayId: displayId || effectiveDisplayId,
-            savedAt: new Date().toISOString(),
-          }));
         }
       } catch (err: any) {
-        console.warn('loadCode caught exception, generating instant fallback code:', err);
-        const num = parseInt(String(displayId || effectiveDisplayId || effectiveJobId).replace(/\D/g, '')) || 100;
-        const generatedCode = String(100000 + ((num * 104729) % 900000));
-        const verifiedExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
-
-        setCode(generatedCode);
-        setExpiresAt(verifiedExpires);
-        setError(null);
+        console.warn('loadCode exception:', err);
       } finally {
         setLoading(false);
       }
     }
 
     loadCode();
-  }, [jobId, displayId]);
+  }, [jobId, displayId, orderIdParam, incomingPrintCode]);
 
   // ── Real-time Job Status Polling & WebSocket Live Push ──
   useEffect(() => {
@@ -528,12 +515,17 @@ function CodeContent() {
     try {
       const { connectSocket } = require('../../lib/socket');
       socket = connectSocket();
-      socket.on('job_update', (data: any) => {
-        if (
-          data &&
-          isSubscribed &&
-          (data.jobId === targetJobId || data.displayId === targetJobId || data.jobId === resolvedJobId)
-        ) {
+
+      const handleUpdate = (data: any) => {
+        if (!isSubscribed || !data) return;
+        const matches =
+          data.jobId === targetJobId ||
+          data.id === targetJobId ||
+          data.displayId === targetJobId ||
+          data.jobId === resolvedJobId ||
+          data.id === resolvedJobId;
+
+        if (matches) {
           if (data.status) {
             setJobStatus(data.status);
             if (data.status === 'COMPLETED') {
@@ -543,11 +535,25 @@ function CodeContent() {
           if (data.printCode) {
             setCode(data.printCode);
           }
+          if (data.printCodeExpiresAt) {
+            setExpiresAt(new Date(data.printCodeExpiresAt));
+          }
           if (data.kiosk?.displayId) {
             setPrintedKiosk(data.kiosk.displayId);
           }
         }
-      });
+      };
+
+      socket.emit('join', `job:${targetJobId}`);
+      socket.emit('join_job', targetJobId);
+      if (resolvedJobId && resolvedJobId !== targetJobId) {
+        socket.emit('join', `job:${resolvedJobId}`);
+        socket.emit('join_job', resolvedJobId);
+      }
+
+      socket.on('job_update', handleUpdate);
+      socket.on('job_updated', handleUpdate);
+      socket.on('payment_verified', handleUpdate);
     } catch {}
 
     return () => {
@@ -555,6 +561,8 @@ function CodeContent() {
       clearInterval(interval);
       if (socket) {
         socket.off('job_update');
+        socket.off('job_updated');
+        socket.off('payment_verified');
       }
     };
   }, [resolvedJobId, jobId, displayId]);

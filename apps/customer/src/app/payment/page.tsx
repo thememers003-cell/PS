@@ -25,6 +25,8 @@ function PaymentContent() {
   const displayId = searchParams.get('displayId');
   const amount = searchParams.get('amount');
   const method = searchParams.get('method') || 'CODE';
+  const initialCodeParam = searchParams.get('printCode') || searchParams.get('code');
+  const validInitialCode = (initialCodeParam && /^\d{6}$/.test(initialCodeParam)) ? initialCodeParam : null;
 
   const [status, setStatus] = useState<'loading' | 'redirecting' | 'waiting' | 'checking' | 'success' | 'failed'>('loading');
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
@@ -48,6 +50,7 @@ function PaymentContent() {
         if (typeof window !== 'undefined') {
           localStorage.setItem('xpos_last_job_id', jobId);
           if (displayId) localStorage.setItem('xpos_last_display_id', displayId);
+          if (validInitialCode) localStorage.setItem('xpos_last_code', validInitialCode);
         }
         setStatus('loading');
         setError(null);
@@ -57,6 +60,8 @@ function PaymentContent() {
           ? 'https://riseupsolutions.in'
           : window.location.origin;
 
+        const codeQuery = validInitialCode ? `&printCode=${validInitialCode}` : '';
+
         // Directly create live PhonePe checkout session (zero mock intermediate calls)
         const res = await fetch('/api/phonepe/create', {
           method: 'POST',
@@ -65,7 +70,7 @@ function PaymentContent() {
             jobId,
             amount: amount || 1,
             displayId,
-            redirectUrl: `${redirectOrigin}/code?jobId=${jobId}&displayId=${displayId || ''}`,
+            redirectUrl: `${redirectOrigin}/code?jobId=${jobId}&displayId=${displayId || ''}${codeQuery}`,
           }),
         });
 
@@ -91,7 +96,7 @@ function PaymentContent() {
           });
           socket.on('payment_verified', (wsData: any) => {
             if (wsData.jobId === jobId || wsData.displayId === displayId) {
-              handlePaymentSuccess();
+              handlePaymentSuccess(wsData.printCode);
             }
           });
 
@@ -101,7 +106,7 @@ function PaymentContent() {
               const checkRes = await verifyPayment(currentPaymentId, currentOrderId, { jobId });
               if (checkRes.success && checkRes.data?.verified) {
                 if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-                handlePaymentSuccess();
+                handlePaymentSuccess(checkRes.data?.printCode);
               }
             } catch { /* silent */ }
           }, 3000);
@@ -129,13 +134,15 @@ function PaymentContent() {
     };
   }, [jobId, displayId, amount]);
 
-  const handlePaymentSuccess = () => {
+  const handlePaymentSuccess = (verifiedCode?: string) => {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     setStatus('success');
     setTimeout(() => {
+      const activeCode = verifiedCode || validInitialCode;
+      const codeQuery = activeCode ? `&printCode=${activeCode}` : '';
       const targetPath = method === 'QR'
         ? `/job/${jobId}?displayId=${displayId || ''}`
-        : `/code?jobId=${jobId}&displayId=${displayId || ''}&orderId=${orderId || ''}`;
+        : `/code?jobId=${jobId}&displayId=${displayId || ''}&orderId=${orderId || ''}${codeQuery}`;
       router.push(targetPath);
     }, 1000);
   };

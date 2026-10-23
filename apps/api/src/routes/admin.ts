@@ -163,7 +163,13 @@ router.get('/jobs', async (req: Request, res: Response) => {
     const { status, printMethod, kioskId, search, page = '1', limit = '50' } = req.query;
 
     const where: any = {};
-    if (status && status !== 'ALL') where.status = status;
+    if (status && status !== 'ALL') {
+      if (status === 'QUEUED') {
+        where.status = { in: ['QUEUED', 'PAID'] };
+      } else {
+        where.status = status;
+      }
+    }
     if (printMethod && printMethod !== 'ALL') where.printMethod = printMethod;
     if (kioskId && kioskId !== 'ALL') {
       where.OR = [{ kioskId }, { kiosk: { displayId: kioskId as string } }];
@@ -477,6 +483,21 @@ router.post('/codes/:id/extend', async (req: Request, res: Response) => {
         status: 'ACTIVE',
       },
     });
+
+    const io = req.app.locals.io;
+    if (io) {
+      const payload = {
+        id: code.jobId,
+        jobId: code.jobId,
+        printCode: code.qrToken,
+        printCodeStatus: 'ACTIVE',
+        printCodeExpiresAt: newExpiry.toISOString(),
+      };
+      io.to('admin').emit('job_updated', payload);
+      io.to('admin').emit('job_update', payload);
+      io.emit('job_updated', payload);
+      io.emit('job_update', payload);
+    }
 
     res.json({ success: true, message: `Code validity extended by ${hours} hours`, data: updated });
   } catch (error) {

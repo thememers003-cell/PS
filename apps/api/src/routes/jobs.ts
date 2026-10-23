@@ -199,12 +199,18 @@ router.post('/', async (req: Request, res: Response) => {
 router.get('/:id', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.locals.prisma;
+    const idParam = String(req.params.id).trim();
+    const idHash = crypto.createHash('sha256').update(idParam).digest('hex');
+
     const job = await prisma.printJob.findFirst({
       where: {
         OR: [
-          { id: req.params.id },
-          { displayId: req.params.id },
-          { payment: { providerOrderId: req.params.id } },
+          { id: idParam },
+          { displayId: idParam },
+          { displayId: `XP-${idParam.padStart(6, '0')}` },
+          { payment: { providerOrderId: idParam } },
+          { printCode: { qrToken: idParam } },
+          { printCode: { codeHash: idHash } },
         ],
       },
       include: {
@@ -220,7 +226,7 @@ router.get('/:id', async (req: Request, res: Response) => {
     }
 
     // Auto-confirm payment if customer reached /code or queries job status with orderId
-    if (job.status === 'CREATED' && (req.query.orderId || req.headers.referer?.includes('/code') || req.params.id.startsWith('PP_') || req.query.fromCode === 'true')) {
+    if ((job.status === 'CREATED' || job.status === 'PAID') && (req.query.orderId || req.headers.referer?.includes('/code') || req.params.id.startsWith('PP_') || req.query.fromCode === 'true')) {
       try {
         const orderId = (req.query.orderId as string) || `PHONEPE_REDIRECT_${Date.now()}`;
         await prisma.payment.upsert({
@@ -238,22 +244,9 @@ router.get('/:id', async (req: Request, res: Response) => {
         });
         await prisma.printJob.update({
           where: { id: job.id },
-          data: { status: 'PAID' },
+          data: { status: 'QUEUED', printMethod: 'CODE' },
         });
-        job.status = 'PAID';
-
-        const io = req.app.locals.io;
-        if (io) {
-          const adminPayload = {
-            id: job.id,
-            displayId: job.displayId,
-            status: 'PAID',
-            paymentStatus: 'PAID',
-            totalPrice: job.totalPrice,
-          };
-          io.to('admin').emit('job_updated', adminPayload);
-          io.emit('job_updated', adminPayload);
-        }
+        job.status = 'QUEUED';
       } catch (paySyncErr) {
         console.warn('Auto-sync paid in getJob warning:', paySyncErr);
       }
@@ -263,8 +256,9 @@ router.get('/:id', async (req: Request, res: Response) => {
     let printCodeRecord = job.printCode;
     let plainCode = printCodeRecord?.qrToken;
     if (!plainCode) {
-      // Deterministically derive or generate clean 6-digit code
-      plainCode = Math.floor(100000 + Math.random() * 900000).toString();
+      // Deterministically derive 6-digit code matching job number/displayId
+      const num = job.jobNumber || parseInt(String(job.displayId).replace(/\D/g, '')) || 100;
+      plainCode = String(100000 + ((num * 104729) % 900000));
       try {
         const codeHash = crypto.createHash('sha256').update(plainCode).digest('hex');
         const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
@@ -275,19 +269,31 @@ router.get('/:id', async (req: Request, res: Response) => {
         });
       } catch (pcErr) {
         console.warn('Auto-create print code in getJob warning:', pcErr);
-        try {
-          const codeHash = crypto.createHash('sha256').update(plainCode).digest('hex');
-          const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-          await prisma.printCode.deleteMany({ where: { jobId: job.id } });
-          printCodeRecord = await prisma.printCode.create({
-            data: { codeHash, qrToken: plainCode, jobId: job.id, status: 'ACTIVE', expiresAt },
-          });
-        } catch {}
       }
     }
 
     const finalPrintCode = printCodeRecord?.qrToken || plainCode;
     const finalExpiresAt = printCodeRecord?.expiresAt ? printCodeRecord.expiresAt.toISOString() : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+    const io = req.app.locals.io;
+    if (io) {
+      const adminPayload = {
+        id: job.id,
+        displayId: job.displayId,
+        status: job.status,
+        paymentStatus: job.payment?.status || 'PAID',
+        printCode: finalPrintCode,
+        printCodeStatus: 'ACTIVE',
+        printCodeExpiresAt: finalExpiresAt,
+        totalPrice: job.totalPrice,
+        fileName: job.file?.originalName,
+        kioskName: job.kiosk?.displayId || null,
+        createdAt: job.createdAt.toISOString(),
+      };
+      io.to('admin').emit('job_updated', adminPayload);
+      io.to('admin').emit('job_update', adminPayload);
+      io.emit('job_updated', adminPayload);
+    }
 
     res.json({
       success: true,
@@ -361,23 +367,22 @@ router.patch('/:id/status', async (req: Request, res: Response) => {
       data: updateData,
     });
 
-    // Notify customer via WebSocket (both session room and broadcast)
-    io.to(`session:${job.sessionId}`).emit('job_update', {
+    // Notify customer & admin via WebSocket (both rooms and broadcast)
+    const statusPayload = {
       type: 'JOB_UPDATE',
+      id: job.id,
       jobId: job.id,
       displayId: job.displayId,
       status,
       currentPage,
       totalPages: job.totalPages,
-    });
-    io.emit('job_update', {
-      type: 'JOB_UPDATE',
-      jobId: job.id,
-      displayId: job.displayId,
-      status,
-      currentPage,
-      totalPages: job.totalPages,
-    });
+    };
+    io.to(`session:${job.sessionId}`).emit('job_update', statusPayload);
+    io.to(`job:${job.id}`).emit('job_update', statusPayload);
+    io.to('admin').emit('job_updated', statusPayload);
+    io.to('admin').emit('job_update', statusPayload);
+    io.emit('job_update', statusPayload);
+    io.emit('job_updated', statusPayload);
 
     // If completed, mark print code as used
     if (status === 'COMPLETED') {

@@ -3,6 +3,7 @@
 // ============================================================
 
 import { Router, Request, Response } from 'express';
+import * as crypto from 'crypto';
 import { createPaymentProvider } from '@xpos/payment';
 
 const router = Router();
@@ -256,39 +257,75 @@ router.post('/verify', async (req: Request, res: Response) => {
     });
 
     if (verification.verified) {
-      // Update job status
+      // Resolve or create print code for this job
+      let printCodeRecord = await prisma.printCode.findUnique({
+        where: { jobId: paymentRecord.jobId },
+      });
+
+      if (!printCodeRecord || !printCodeRecord.qrToken) {
+        const num = paymentRecord.job.jobNumber || parseInt(String(paymentRecord.job.displayId).replace(/\D/g, '')) || 100;
+        const code = String(100000 + ((num * 104729) % 900000));
+        const codeHash = crypto.createHash('sha256').update(code).digest('hex');
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        try {
+          printCodeRecord = await prisma.printCode.upsert({
+            where: { jobId: paymentRecord.jobId },
+            update: { codeHash, qrToken: code, status: 'ACTIVE', expiresAt },
+            create: { jobId: paymentRecord.jobId, codeHash, qrToken: code, status: 'ACTIVE', expiresAt },
+          });
+        } catch (codeUpsertErr) {
+          console.warn('Payment verify printCode upsert warning:', codeUpsertErr);
+        }
+      }
+
+      const activeCode = printCodeRecord?.qrToken;
+      const codeExpiryStr = printCodeRecord?.expiresAt ? printCodeRecord.expiresAt.toISOString() : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+      // Update job status to QUEUED (ready for kiosk pickup or direct release)
       await prisma.printJob.update({
         where: { id: paymentRecord.jobId },
-        data: { status: 'PAID' },
+        data: { status: 'QUEUED' },
       });
 
       const customerPayload = {
         type: 'PAYMENT_VERIFIED',
         jobId: paymentRecord.jobId,
         displayId: paymentRecord.job.displayId,
-        status: 'PAID',
+        status: 'QUEUED',
         amount: paymentRecord.amount,
+        printCode: activeCode,
+        printCodeStatus: 'ACTIVE',
+        printCodeExpiresAt: codeExpiryStr,
         providerRef: verification.providerRef,
       };
 
       // Notify customer via WebSocket
       io.to(`session:${paymentRecord.job.sessionId}`).emit('payment_verified', customerPayload);
       io.to(`job:${paymentRecord.jobId}`).emit('payment_verified', customerPayload);
+      io.to(`session:${paymentRecord.job.sessionId}`).emit('job_update', customerPayload);
+      io.to(`job:${paymentRecord.jobId}`).emit('job_update', customerPayload);
 
       // Broadcast globally for responsive frontends
       io.emit('payment_verified', customerPayload);
+      io.emit('job_update', customerPayload);
 
-      // Notify Real-Time Admin Portal (room and broadcast)
+      // Notify Real-Time Admin Portal with 6-digit release code and QUEUED status
       const adminPayload = {
         id: paymentRecord.jobId,
         displayId: paymentRecord.job.displayId,
-        status: 'PAID',
+        status: 'QUEUED',
         paymentStatus: 'PAID',
         totalPrice: paymentRecord.amount,
+        printCode: activeCode,
+        printCodeStatus: 'ACTIVE',
+        printCodeExpiresAt: codeExpiryStr,
+        fileName: paymentRecord.job.file?.originalName,
+        createdAt: paymentRecord.job.createdAt?.toISOString?.() || new Date().toISOString(),
         providerRef: verification.providerRef,
       };
       io.to('admin').emit('job_updated', adminPayload);
       io.to('admin').emit('job_update', adminPayload);
+      io.to('admin').emit('new_job', adminPayload);
       io.emit('job_updated', adminPayload);
       io.emit('job_update', adminPayload);
 

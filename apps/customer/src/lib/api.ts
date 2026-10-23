@@ -156,10 +156,10 @@ export async function verifyPayment(paymentId: string, orderId: string, paymentD
 }
 
 // ── Print Codes ──
-export async function generatePrintCode(jobId: string, allowedKioskId?: string, orderId?: string) {
+export async function generatePrintCode(jobId: string, allowedKioskId?: string, orderId?: string, code?: string) {
   return apiRequest<any>('/api/print-codes/generate', {
     method: 'POST',
-    body: JSON.stringify({ jobId, allowedKioskId, orderId }),
+    body: JSON.stringify({ jobId, allowedKioskId, orderId, code }),
   });
 }
 

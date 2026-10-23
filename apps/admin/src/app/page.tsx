@@ -1004,7 +1004,7 @@ export default function SuperAdminRootPage() {
                                   <span className="font-mono font-black text-base text-amber-700 bg-amber-50 px-3 py-1 rounded-xl border border-amber-200 shadow-sm inline-block">
                                     {job.printCode}
                                   </span>
-                                  {job.status === 'QUEUED' && (
+                                  {(job.status === 'QUEUED' || job.status === 'PAID') && (
                                     <div className="flex items-center gap-1.5 text-[11px] font-bold text-sky-600">
                                       <Clock className="w-3 h-3 animate-spin text-sky-500" />
                                       <span>{getRemainingCountdown(job.printCodeExpiresAt)}</span>
@@ -1090,7 +1090,7 @@ export default function SuperAdminRootPage() {
                                 )}
 
                                 {/* ⏳ Extend 6-digit Code (+24 Hours) */}
-                                {job.printCode && job.status === 'QUEUED' && (
+                                {job.printCode && (job.status === 'QUEUED' || job.status === 'PAID') && (
                                   <button
                                     onClick={() => handleExtendCode(job.printCode!)}
                                     disabled={actionLoading === job.printCode}
@@ -1517,7 +1517,7 @@ export default function SuperAdminRootPage() {
                   <span className="text-slate-400 font-bold">6-Digit Release Code</span>
                   <div className="text-right">
                     <span className="text-amber-700 font-mono font-black text-sm block">{selectedJob.printCode || 'None'}</span>
-                    {selectedJob.status === 'QUEUED' && (
+                    {(selectedJob.status === 'QUEUED' || selectedJob.status === 'PAID') && (
                       <span className="text-[11px] text-sky-600 font-bold">
                         {getRemainingCountdown(selectedJob.printCodeExpiresAt)}
                       </span>
@@ -1557,7 +1557,7 @@ export default function SuperAdminRootPage() {
                 )}
 
                 {/* ⏳ Extend Code (+24h) */}
-                {selectedJob.printCode && selectedJob.status === 'QUEUED' && (
+                {selectedJob.printCode && (selectedJob.status === 'QUEUED' || selectedJob.status === 'PAID') && (
                   <button
                     onClick={() => handleExtendCode(selectedJob.printCode!)}
                     className="py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1.5 active:scale-95 shadow-sm"
