@@ -162,7 +162,7 @@ export class LocalStorageService implements IStorageService {
   }
 
   async getSignedUrl(key: string): Promise<string> {
-    const apiUrl = process.env.API_URL || 'http://localhost:4000';
+    const apiUrl = process.env.API_URL || process.env.RENDER_EXTERNAL_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
     return `${apiUrl}/api/files/download/${encodeURIComponent(key)}`;
   }
 

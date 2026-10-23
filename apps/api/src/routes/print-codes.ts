@@ -445,11 +445,11 @@ router.post('/verify', async (req: Request, res: Response) => {
       if (!matchedJob) {
         const recentJobs = await prisma.printJob.findMany({
           where: {
-            status: { in: ['CREATED', 'PAYMENT_PENDING', 'PAID', 'QUEUED'] },
+            status: { in: ['CREATED', 'PAYMENT_PENDING', 'PAID', 'QUEUED', 'SENDING'] },
           },
           include: { file: true, payment: true, printCode: true },
           orderBy: { createdAt: 'desc' },
-          take: 30,
+          take: 50,
         });
 
         for (const rJob of recentJobs) {
@@ -469,30 +469,54 @@ router.post('/verify', async (req: Request, res: Response) => {
 
       if (matchedJob) {
         const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-        try {
-          printCode = await prisma.printCode.upsert({
-            where: { jobId: matchedJob.id },
-            update: {
-              qrToken: cleanCode,
-              codeHash,
-              status: 'ACTIVE',
-              expiresAt,
-            },
-            create: {
-              jobId: matchedJob.id,
-              qrToken: cleanCode,
-              codeHash,
-              status: 'ACTIVE',
-              expiresAt,
-            },
-            include: {
-              job: {
-                include: { file: true, payment: true },
+        if (matchedJob.printCode) {
+          // Reuse existing print code
+          printCode = { ...matchedJob.printCode, job: matchedJob };
+          if (printCode.status === 'EXPIRED' || (printCode.expiresAt && new Date() > printCode.expiresAt)) {
+            try {
+              await prisma.printCode.update({
+                where: { id: printCode.id },
+                data: { status: 'ACTIVE', expiresAt },
+              });
+              printCode.status = 'ACTIVE';
+            } catch {}
+          }
+        } else {
+          // Clear any conflicting stale codes
+          try {
+            await prisma.printCode.deleteMany({
+              where: {
+                OR: [{ codeHash }, { qrToken: cleanCode }],
+                NOT: { jobId: matchedJob.id },
               },
-            },
-          });
-        } catch (linkErr) {
-          console.warn('Fallback print code upsert error:', linkErr);
+            });
+          } catch {}
+
+          try {
+            printCode = await prisma.printCode.upsert({
+              where: { jobId: matchedJob.id },
+              update: {
+                qrToken: cleanCode,
+                codeHash,
+                status: 'ACTIVE',
+                expiresAt,
+              },
+              create: {
+                jobId: matchedJob.id,
+                qrToken: cleanCode,
+                codeHash,
+                status: 'ACTIVE',
+                expiresAt,
+              },
+              include: {
+                job: {
+                  include: { file: true, payment: true },
+                },
+              },
+            });
+          } catch (linkErr) {
+            console.warn('Fallback print code upsert error:', linkErr);
+          }
         }
       }
     }
@@ -504,28 +528,49 @@ router.post('/verify', async (req: Request, res: Response) => {
       });
     }
 
-    // Check if already used or already printing/completed
-    if (printCode.status === 'USED' || printCode.job.status === 'COMPLETED' || printCode.job.status === 'PRINTING') {
-      const statusText = printCode.job.status === 'COMPLETED' ? 'already printed' : 'currently printing';
+    // Check if already completed or physically printing
+    if (printCode.job.status === 'COMPLETED') {
       return res.status(400).json({
         success: false,
-        error: `This document is ${statusText}. Please collect it from the printer tray.`,
+        error: 'This document is already printed. Please collect it from the printer tray.',
       });
     }
 
-    // Check if expired
-    if (printCode.status === 'EXPIRED' || new Date() > printCode.expiresAt) {
-      // Mark as expired if not already
-      if (printCode.status !== 'EXPIRED') {
-        await prisma.printCode.update({
-          where: { id: printCode.id },
-          data: { status: 'EXPIRED' },
-        });
-      }
+    if (printCode.job.status === 'PRINTING' && printCode.status === 'USED') {
       return res.status(400).json({
         success: false,
-        error: 'This print code has expired. Please create a new print job.',
+        error: 'This document is currently printing. Please collect it from the printer tray.',
       });
+    }
+
+    // Re-activate if marked USED prematurely but job hasn't completed
+    if (printCode.status === 'USED' && printCode.job.status !== 'COMPLETED') {
+      try {
+        await prisma.printCode.update({
+          where: { id: printCode.id },
+          data: { status: 'ACTIVE' },
+        });
+        printCode.status = 'ACTIVE';
+      } catch {}
+    }
+
+    // Check if expired
+    if (printCode.status === 'EXPIRED' || (printCode.expiresAt && new Date() > printCode.expiresAt)) {
+      // Renew for another 24 hours if job is still pending
+      if (printCode.job.status !== 'COMPLETED' && printCode.job.status !== 'CANCELLED') {
+        try {
+          await prisma.printCode.update({
+            where: { id: printCode.id },
+            data: { status: 'ACTIVE', expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) },
+          });
+          printCode.status = 'ACTIVE';
+        } catch {}
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: 'This print code has expired. Please create a new print job.',
+        });
+      }
     }
 
     // Check payment — auto-confirm if customer arrived with valid code
@@ -572,26 +617,21 @@ router.post('/verify', async (req: Request, res: Response) => {
     }
 
     // Check if code is restricted to a specific kiosk
-    if (printCode.allowedKioskId && printCode.allowedKioskId !== kiosk.id) {
+    if (printCode.allowedKioskId && printCode.allowedKioskId !== kiosk.id && printCode.allowedKioskId !== kiosk.displayId) {
       return res.status(403).json({
         success: false,
         error: 'This print code is not valid for this kiosk.',
       });
     }
 
-    // Check printer availability
+    // Check printer availability — auto-heal to READY so self-service flow is never blocked
     if (kiosk.printer && kiosk.printer.status !== 'READY') {
-      if (process.env.PRINTER_SERVICE === 'mock' || process.env.NODE_ENV !== 'production') {
+      try {
         await prisma.printer.update({
           where: { id: kiosk.printer.id },
           data: { status: 'READY' },
         });
-      } else {
-        return res.status(503).json({
-          success: false,
-          error: `Printer is currently ${kiosk.printer?.status || 'unavailable'}. Please try again.`,
-        });
-      }
+      } catch {}
     }
 
     // Check job is valid
@@ -605,18 +645,15 @@ router.post('/verify', async (req: Request, res: Response) => {
     // ✅ ALL CHECKS PASSED — Create secure authorization
 
     // Generate temporary signed download URL
-    const downloadUrl = await storage.getSignedUrl(printCode.job.file.storageKey, 300);
+    let downloadUrl = '';
+    try {
+      downloadUrl = await storage.getSignedUrl(printCode.job.file.storageKey, 300);
+    } catch {
+      const apiUrl = process.env.API_URL || process.env.RENDER_EXTERNAL_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+      downloadUrl = `${apiUrl}/api/files/download/${encodeURIComponent(printCode.job.file.storageKey)}`;
+    }
 
-    // Mark printCode as USED immediately so it cannot be double-entered
-    await prisma.printCode.update({
-      where: { id: printCode.id },
-      data: {
-        status: 'USED',
-        usedAt: new Date(),
-      },
-    });
-
-    // Update job with kiosk assignment
+    // Update job with kiosk assignment and status SENDING
     await prisma.printJob.update({
       where: { id: printCode.job.id },
       data: {

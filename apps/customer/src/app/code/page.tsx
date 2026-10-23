@@ -107,7 +107,8 @@ function CodeContent() {
         setJobStatus('QUEUED');
         setError(null);
       } else if (!code) {
-        const num = parseInt(String(activeJobId || displayId || Date.now()).replace(/\D/g, '')) || 100;
+        const targetStr = String(displayId || (activeJobId && !activeJobId.includes('-') ? activeJobId : '') || '100');
+        const num = parseInt(targetStr.replace(/\D/g, '')) || 100;
         const derived = lastSavedCode || String(100000 + ((num * 104729) % 900000));
         setCode(derived);
         setExpiresAt(new Date(Date.now() + 24 * 60 * 60 * 1000));
@@ -118,7 +119,8 @@ function CodeContent() {
       console.warn('Manual reconcile exception:', e);
       if (!code) {
         const lastSavedCode = typeof window !== 'undefined' ? localStorage.getItem('xpos_last_code') : null;
-        const num = parseInt(String(jobId || displayId || Date.now()).replace(/\D/g, '')) || 100;
+        const targetStr = String(displayId || (jobId && !jobId.includes('-') ? jobId : '') || '100');
+        const num = parseInt(targetStr.replace(/\D/g, '')) || 100;
         const derived = lastSavedCode || String(100000 + ((num * 104729) % 900000));
         setCode(derived);
         setExpiresAt(new Date(Date.now() + 24 * 60 * 60 * 1000));
@@ -515,7 +517,8 @@ function CodeContent() {
         } else {
           // Guaranteed instant reveal fallback from storage or deterministic calculation
           const cachedLast = typeof window !== 'undefined' ? localStorage.getItem('xpos_last_code') : null;
-          const num = parseInt(String(effectiveDisplayId || fallbackJobId).replace(/\D/g, '')) || 100;
+          const targetStr = String(effectiveDisplayId || (fallbackJobId && !fallbackJobId.includes('-') ? fallbackJobId : '') || '100');
+          const num = parseInt(targetStr.replace(/\D/g, '')) || 100;
           const fallbackCode = cachedLast || String(100000 + ((num * 104729) % 900000));
           setCode(fallbackCode);
           setExpiresAt(new Date(Date.now() + 24 * 60 * 60 * 1000));

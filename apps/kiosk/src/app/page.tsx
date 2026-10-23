@@ -608,7 +608,12 @@ export default function KioskApp() {
         const jobId = printData.jobId || printData.job?.id || '';
         const displayId = printData.displayId || printData.job?.displayId || 'Active';
         const rawDownloadUrl = printData.downloadUrl || `/api/files/download/${printData.file?.storageKey || ''}`;
-        const fullDownloadUrl = rawDownloadUrl.startsWith('http') ? rawDownloadUrl : `${getApiUrl()}${rawDownloadUrl}`;
+        let fullDownloadUrl = rawDownloadUrl;
+        if (!rawDownloadUrl.startsWith('http')) {
+          fullDownloadUrl = `${getApiUrl()}${rawDownloadUrl.startsWith('/') ? '' : '/'}${rawDownloadUrl}`;
+        } else if (rawDownloadUrl.includes('localhost:4000') && !getApiUrl().includes('localhost:4000')) {
+          fullDownloadUrl = rawDownloadUrl.replace('http://localhost:4000', getApiUrl());
+        }
         const totalPages = printData.printSettings?.totalPages || printData.job?.totalPages || 1;
         const fileName = printData.file?.originalName || printData.job?.file?.originalName || 'Document.pdf';
         const colorMode = printData.printSettings?.colorMode || printData.job?.colorMode || 'BW';

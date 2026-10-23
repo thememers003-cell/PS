@@ -16,6 +16,8 @@ services:
         sync: false
       - key: STORAGE_DRIVER
         value: local
+      - key: API_URL
+        value: https://xpos-printing-cloud.onrender.com
       - key: PRINT_CODE_EXPIRY_MINUTES
         value: 1440
 
